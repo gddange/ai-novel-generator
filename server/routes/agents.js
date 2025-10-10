@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const AgentManager = require('../agents/AgentManager');
+const ApiKeyValidator = require('../utils/ApiKeyValidator');
 
-// 创建全局agent管理器实例
-const agentManager = new AgentManager();
+// 创建全局代理管理器实例
+const agentManager = new AgentManager('deepseek');
 
 /**
  * 获取所有agent状态
@@ -28,13 +29,51 @@ router.get('/status', (req, res) => {
  */
 router.post('/projects/start', async (req, res) => {
   try {
-    const { title, genre, theme, description } = req.body;
+    const { title, genre, theme, description, apiProvider, apiKey } = req.body;
+    
+    console.log('📥 收到项目创建请求:', {
+      title,
+      genre,
+      theme,
+      apiProvider,
+      hasApiKey: !!apiKey,
+      apiKeyLength: apiKey ? apiKey.length : 0
+    });
     
     if (!title || !genre || !theme) {
+      console.log('❌ 缺少必填字段');
       return res.status(400).json({
         success: false,
         error: '标题、类型和主题为必填项'
       });
+    }
+
+    if (!apiKey) {
+      console.log('❌ 缺少API Key');
+      return res.status(400).json({
+        success: false,
+        error: 'API Key为必填项'
+      });
+    }
+
+    // 验证API Key格式
+    console.log('🔍 开始验证API Key...');
+    const validation = ApiKeyValidator.validateApiKey(apiKey, apiProvider || 'deepseek');
+    console.log('🔍 验证结果:', validation);
+    
+    if (!validation.valid) {
+      console.log('❌ API Key验证失败:', validation.error);
+      return res.status(400).json({
+        success: false,
+        error: validation.error
+      });
+    }
+
+    console.log(`🔑 使用${apiProvider || 'deepseek'}服务，API Key: ${ApiKeyValidator.maskApiKey(apiKey)}`);
+
+    // 设置API提供商和API Key
+    if (apiProvider) {
+      agentManager.setApiProvider(apiProvider, validation.sanitized);
     }
 
     const result = await agentManager.startNewProject({
@@ -47,7 +86,8 @@ router.post('/projects/start', async (req, res) => {
     // 通过Socket.IO通知前端
     const io = req.app.get('io');
     if (io) {
-      io.emit('project-started', result);
+      io.to(result.projectId).emit('project-started', result);
+      console.log(`📡 发送project-started事件到房间: ${result.projectId}`);
     }
 
     res.json({
@@ -55,6 +95,7 @@ router.post('/projects/start', async (req, res) => {
       data: result
     });
   } catch (error) {
+    console.error('❌ 项目创建失败:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -79,7 +120,8 @@ router.post('/projects/:projectId/planning', async (req, res) => {
     // 通过Socket.IO通知前端
     const io = req.app.get('io');
     if (io) {
-      io.emit('planning-completed', result);
+      io.to(projectId).emit('planning-completed', result);
+      console.log(`📡 发送planning-completed事件到房间: ${projectId}`);
     }
 
     res.json({
@@ -112,7 +154,8 @@ router.post('/projects/:projectId/writing', async (req, res) => {
     // 通过Socket.IO通知前端
     const io = req.app.get('io');
     if (io) {
-      io.emit('writing-progress', result);
+      io.to(projectId).emit('writing-progress', result);
+      console.log(`📡 发送writing-progress事件到房间: ${projectId}`);
     }
 
     res.json({
@@ -143,20 +186,26 @@ router.post('/projects/workflow', async (req, res) => {
 
     // 通过Socket.IO发送开始通知
     const io = req.app.get('io');
-    if (io) {
-      io.emit('workflow-started', { title, genre, theme });
-    }
-
+    let projectId = null;
+    
     const result = await agentManager.executeFullWorkflow({
       title,
       genre,
       theme,
       description
     });
+    
+    projectId = result.projectId;
+    
+    if (io && projectId) {
+      io.to(projectId).emit('workflow-started', { title, genre, theme });
+      console.log(`📡 发送workflow-started事件到房间: ${projectId}`);
+    }
 
     // 通过Socket.IO发送完成通知
-    if (io) {
-      io.emit('workflow-completed', result);
+    if (io && projectId) {
+      io.to(projectId).emit('workflow-completed', result);
+      console.log(`📡 发送workflow-completed事件到房间: ${projectId}`);
     }
 
     res.json({
@@ -167,7 +216,14 @@ router.post('/projects/workflow', async (req, res) => {
     // 通过Socket.IO发送错误通知
     const io = req.app.get('io');
     if (io) {
-      io.emit('workflow-error', { error: error.message });
+      // 如果有项目ID，发送到特定房间，否则广播
+      if (agentManager.currentProject?.id) {
+        io.to(agentManager.currentProject.id).emit('workflow-error', { error: error.message });
+        console.log(`📡 发送workflow-error事件到房间: ${agentManager.currentProject.id}`);
+      } else {
+        io.emit('workflow-error', { error: error.message });
+        console.log('📡 广播workflow-error事件');
+      }
     }
 
     res.status(500).json({

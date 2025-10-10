@@ -1,6 +1,7 @@
 class NovelGeneratorApp {
     constructor() {
         this.currentProject = null;
+        this.currentProjectId = null;
         this.agents = {
             author: { status: 'idle', progress: 0 },
             outline: { status: 'idle', progress: 0 },
@@ -9,7 +10,88 @@ class NovelGeneratorApp {
         this.chapters = [];
         this.isGenerating = false;
         
+        // 初始化Socket.IO连接
+        this.socket = io();
+        this.setupSocketListeners();
+        
         this.init();
+    }
+
+    setupSocketListeners() {
+        console.log('🔌 设置Socket.IO事件监听器...');
+        
+        this.socket.on('connect', () => {
+            console.log('✅ Socket.IO连接成功');
+        });
+
+        this.socket.on('disconnect', () => {
+            console.log('❌ Socket.IO连接断开');
+        });
+
+        this.socket.on('error', (error) => {
+            console.error('❌ Socket.IO错误:', error);
+        });
+
+        // 监听规划完成事件
+        this.socket.on('planning-completed', (result) => {
+            console.log('📋 收到规划完成事件:', result);
+            this.updateCurrentActivity('🎉 大纲制定完成！');
+            this.updateOverallProgress(30);
+            this.updateAgentStatus('outline', 'completed', 100, '大纲制定完成');
+            
+            if (this.planningResolve) {
+                this.planningResolve(result);
+                this.planningResolve = null;
+            }
+        });
+
+        // 监听规划错误事件
+        this.socket.on('planning-error', (error) => {
+            console.error('❌ 收到规划错误事件:', error);
+            this.updateCurrentActivity(`❌ 规划失败: ${error.message}`);
+            
+            if (this.planningReject) {
+                this.planningReject(new Error(error.message));
+                this.planningReject = null;
+            }
+        });
+
+        // 监听写作进度事件
+        this.socket.on('writing-progress', (result) => {
+            console.log('✍️ 收到写作进度事件:', result);
+            this.updateCurrentActivity(`✍️ 写作进度更新: ${result.message}`);
+            this.updateAgentStatus('author', 'working', result.progress || 50, result.message);
+        });
+
+        // 监听润色进度事件
+        this.socket.on('polishing-progress', (result) => {
+            console.log('✨ 收到润色进度事件:', result);
+            this.updateCurrentActivity(`✨ 润色进度更新: ${result.message}`);
+            this.updateAgentStatus('polish', 'working', result.progress || 50, result.message);
+        });
+
+        // 监听项目启动事件
+        this.socket.on('project-started', (result) => {
+            console.log('🚀 收到项目启动事件:', result);
+            this.updateCurrentActivity('🚀 项目启动成功');
+        });
+
+        // 监听工作流程事件
+        this.socket.on('workflow-started', (data) => {
+            console.log('🔄 收到工作流程启动事件:', data);
+            this.updateCurrentActivity('🔄 开始完整创作流程');
+        });
+
+        this.socket.on('workflow-completed', (result) => {
+            console.log('🎉 收到工作流程完成事件:', result);
+            this.updateCurrentActivity('🎉 创作流程完成！');
+            this.updateOverallProgress(100);
+        });
+
+        this.socket.on('workflow-error', (error) => {
+            console.error('❌ 收到工作流程错误事件:', error);
+            this.updateCurrentActivity(`❌ 创作流程失败: ${error.error}`);
+        });
     }
 
     init() {
@@ -119,18 +201,61 @@ class NovelGeneratorApp {
         document.getElementById('progressSection').classList.remove('hidden');
     }
 
-    async createNewProject() {
-        const formData = new FormData(document.getElementById('newProjectForm'));
-        const projectData = {
-            title: formData.get('title'),
-            genre: formData.get('genre'),
-            description: formData.get('theme')
+    validateForm() {
+        const title = document.getElementById('novelTitle').value.trim();
+        const genre = document.getElementById('novelGenre').value;
+        const theme = document.getElementById('novelTheme').value.trim();
+        const apiKey = document.getElementById('apiKey').value.trim();
+
+        if (!title) {
+            this.showError('请输入小说标题');
+            return false;
+        }
+
+        if (!genre) {
+            this.showError('请选择小说类型');
+            return false;
+        }
+
+        if (!theme) {
+            this.showError('请输入小说主题描述');
+            return false;
+        }
+
+        if (!apiKey) {
+            this.showError('请输入API Key');
+            return false;
+        }
+
+        return true;
+    }
+
+    getFormData() {
+        return {
+            title: document.getElementById('novelTitle').value.trim(),
+            genre: document.getElementById('novelGenre').value,
+            theme: document.getElementById('novelTheme').value.trim(),
+            apiProvider: document.getElementById('apiProvider').value,
+            apiKey: document.getElementById('apiKey').value.trim()
         };
+    }
+
+    async createNewProject() {
+        console.log('🚀 开始创建新项目...');
+        
+        if (!this.validateForm()) {
+            console.log('❌ 表单验证失败');
+            return;
+        }
+
+        const projectData = this.getFormData();
+        console.log('📋 项目数据:', projectData);
 
         try {
             this.showLoading('正在创建项目...');
             
-            const response = await fetch('/api/novels', {
+            console.log('📤 发送创建请求...');
+            const response = await fetch('/api/agents/projects/start', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -141,14 +266,22 @@ class NovelGeneratorApp {
             const result = await response.json();
             
             if (result.success) {
+                console.log('✅ 项目创建成功:', result.data);
+                
                 this.currentProject = result.data;
+                this.currentProjectId = result.data.id;
+                
+                // 加入Socket.IO房间
+                this.socket.emit('join-novel', this.currentProjectId);
+                console.log(`🏠 加入项目房间: ${this.currentProjectId}`);
+                
                 this.showProgressSection();
                 this.startNovelGeneration();
             } else {
                 this.showError(result.error || '项目创建失败');
             }
         } catch (error) {
-            console.error('创建项目失败:', error);
+            console.error('❌ 创建项目失败:', error);
             this.showError('创建项目时发生错误');
         } finally {
             this.hideLoading();
@@ -156,20 +289,29 @@ class NovelGeneratorApp {
     }
 
     async startNovelGeneration() {
+        console.log('🚀 开始小说生成流程...');
+        
         if (this.isGenerating) return;
         
         this.isGenerating = true;
-        this.updateCurrentActivity('开始规划小说大纲...');
+        this.updateCurrentActivity('初始化创作流程...');
+        this.updateOverallProgress(5);
 
         try {
+            console.log('🎯 开始规划阶段...');
             // 第一阶段：规划大纲
             await this.executePlanningPhase();
             
+            console.log('✍️ 开始写作循环...');
             // 第二阶段：开始写作循环
             await this.executeWritingLoop();
             
+            console.log('✅ 小说生成完成!');
+            this.updateCurrentActivity('🎉 小说创作完成！');
+            
         } catch (error) {
-            console.error('小说生成过程出错:', error);
+            console.error('❌ 小说生成过程出错:', error);
+            this.updateCurrentActivity(`❌ 生成失败: ${error.message}`);
             this.showError('生成过程中发生错误: ' + error.message);
         } finally {
             this.isGenerating = false;
@@ -177,22 +319,58 @@ class NovelGeneratorApp {
     }
 
     async executePlanningPhase() {
-        this.updateAgentStatus('outline', 'working', 20, '正在分析主题...');
-        this.updateAgentStatus('author', 'working', 10, '准备创作思路...');
-        
-        const response = await fetch(`/api/agents/${this.currentProject.id}/planning`, {
-            method: 'POST'
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            this.updateAgentStatus('outline', 'completed', 100, '大纲规划完成');
-            this.updateAgentStatus('author', 'ready', 30, '准备开始写作');
-            this.updateCurrentActivity('大纲规划完成，开始创作第一章...');
-            this.updateOverallProgress(25);
-        } else {
-            throw new Error(result.error || '大纲规划失败');
+        console.log('📋 执行规划阶段...');
+        this.updateCurrentActivity('🤖 AI正在分析小说主题...');
+        this.updateOverallProgress(10);
+
+        try {
+            console.log('📤 发送规划请求...');
+            const response = await fetch(`/api/agents/projects/${this.currentProjectId}/planning`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`规划请求失败: ${response.status} ${response.statusText}`);
+            }
+
+            console.log('✅ 规划请求发送成功，等待AI处理...');
+            this.updateCurrentActivity('🧠 AI正在制定创作大纲...');
+            this.updateOverallProgress(20);
+
+            // 等待规划完成事件
+            return new Promise((resolve, reject) => {
+                console.log('👂 监听规划完成事件...');
+                
+                // 设置超时
+                const timeout = setTimeout(() => {
+                    console.error('⏰ 规划阶段超时');
+                    reject(new Error('规划阶段超时，请重试'));
+                }, 120000); // 2分钟超时
+
+                this.socket.once('planning-completed', (data) => {
+                    console.log('🎉 收到规划完成事件:', data);
+                    clearTimeout(timeout);
+                    
+                    this.updateCurrentActivity('✅ 大纲制定完成！');
+                    this.updateOverallProgress(30);
+                    
+                    resolve(data);
+                });
+
+                this.socket.once('planning-error', (error) => {
+                    console.error('❌ 规划阶段出错:', error);
+                    clearTimeout(timeout);
+                    reject(new Error(error.message || '规划阶段失败'));
+                });
+            });
+
+        } catch (error) {
+            console.error('❌ 规划阶段执行失败:', error);
+            this.updateCurrentActivity(`❌ 规划失败: ${error.message}`);
+            throw error;
         }
     }
 
@@ -228,7 +406,7 @@ class NovelGeneratorApp {
         this.updateAgentStatus('author', 'working', 50 + chapterNumber * 5, `正在创作第${chapterNumber}章...`);
         this.updateCurrentActivity(`正在创作第${chapterNumber}章...`);
         
-        const response = await fetch(`/api/agents/${this.currentProject.id}/writing`, {
+        const response = await fetch(`/api/agents/projects/${this.currentProjectId}/writing`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -249,7 +427,7 @@ class NovelGeneratorApp {
         this.updateAgentStatus('polish', 'working', 30, `正在润色第${startChapter + 1}-${endChapter + 1}章...`);
         this.updateCurrentActivity(`正在润色第${startChapter + 1}-${endChapter + 1}章...`);
         
-        const response = await fetch(`/api/agents/${this.currentProject.id}/polishing`, {
+        const response = await fetch(`/api/agents/projects/${this.currentProjectId}/polishing`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -270,10 +448,10 @@ class NovelGeneratorApp {
     }
 
     async loadChapters() {
-        if (!this.currentProject) return;
+        if (!this.currentProjectId) return;
         
         try {
-            const response = await fetch(`/api/novels/${this.currentProject.id}/chapters`);
+            const response = await fetch(`/api/novels/${this.currentProjectId}/chapters`);
             const result = await response.json();
             
             if (result.success) {
@@ -325,7 +503,7 @@ class NovelGeneratorApp {
 
     async viewChapter(chapterNumber) {
         try {
-            const response = await fetch(`/api/novels/${this.currentProject.id}/chapters/${chapterNumber}`);
+            const response = await fetch(`/api/novels/${this.currentProjectId}/chapters/${chapterNumber}`);
             const result = await response.json();
             
             if (result.success) {
@@ -358,7 +536,7 @@ class NovelGeneratorApp {
     }
 
     showExportOptions() {
-        if (!this.currentProject) {
+        if (!this.currentProjectId) {
             this.showError('请先创建或选择一个项目');
             return;
         }
@@ -407,7 +585,7 @@ class NovelGeneratorApp {
 
     async exportNovel(format) {
         try {
-            const response = await fetch(`/api/novels/${this.currentProject.id}/export/${format}`);
+            const response = await fetch(`/api/novels/${this.currentProjectId}/export/${format}`);
             
             if (response.ok) {
                 const blob = await response.blob();
@@ -434,13 +612,13 @@ class NovelGeneratorApp {
     }
 
     async previewNovel() {
-        if (!this.currentProject) {
+        if (!this.currentProjectId) {
             this.showError('请先创建或选择一个项目');
             return;
         }
         
         try {
-            const response = await fetch(`/api/novels/${this.currentProject.id}/full`);
+            const response = await fetch(`/api/novels/${this.currentProjectId}/full`);
             const result = await response.json();
             
             if (result.success) {
@@ -535,11 +713,17 @@ class NovelGeneratorApp {
 
     async loadProject(projectId) {
         try {
-            const response = await fetch(`/api/agents/${projectId}/load`);
+            const response = await fetch(`/api/novels/${projectId}`);
             const result = await response.json();
             
             if (result.success) {
                 this.currentProject = result.data;
+                this.currentProjectId = result.data.id;
+                
+                // 加入Socket.IO房间
+                this.socket.emit('join-novel', this.currentProjectId);
+                console.log(`🏠 加入项目房间: ${this.currentProjectId}`);
+                
                 this.showProgressSection();
                 await this.loadChapters();
                 
@@ -668,6 +852,37 @@ class NovelGeneratorApp {
                 </button>
             </div>
         `);
+    }
+}
+
+// API Key 相关辅助函数
+function toggleApiKeyInput() {
+    const apiProvider = document.getElementById('apiProvider').value;
+    const apiKeyLabel = document.getElementById('apiKeyLabel');
+    const apiKeyHint = document.getElementById('apiKeyHint');
+    const apiKeyLink = document.getElementById('apiKeyLink');
+    
+    if (apiProvider === 'openai') {
+        apiKeyLabel.textContent = 'OpenAI API Key';
+        apiKeyHint.textContent = '您的OpenAI API Key将用于生成内容，不会被存储';
+        apiKeyLink.innerHTML = '<a href="https://platform.openai.com/api-keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取OpenAI API Key →</a>';
+    } else {
+        apiKeyLabel.textContent = 'DeepSeek API Key';
+        apiKeyHint.textContent = '您的DeepSeek API Key将用于生成内容，不会被存储';
+        apiKeyLink.innerHTML = '<a href="https://platform.deepseek.com/api_keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取DeepSeek API Key →</a>';
+    }
+}
+
+function toggleApiKeyVisibility() {
+    const apiKeyInput = document.getElementById('apiKey');
+    const toggleIcon = document.getElementById('apiKeyToggleIcon');
+    
+    if (apiKeyInput.type === 'password') {
+        apiKeyInput.type = 'text';
+        toggleIcon.className = 'fas fa-eye-slash';
+    } else {
+        apiKeyInput.type = 'password';
+        toggleIcon.className = 'fas fa-eye';
     }
 }
 

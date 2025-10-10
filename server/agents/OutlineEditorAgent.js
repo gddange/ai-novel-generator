@@ -1,13 +1,13 @@
 const BaseAgent = require('./BaseAgent');
-const OpenAI = require('openai');
+const DeepSeekService = require('../services/DeepSeekService');
 const fs = require('fs-extra');
 const path = require('path');
 const ContextManager = require('../utils/ContextManager');
 const SearchService = require('../services/SearchService');
 
 class OutlineEditorAgent extends BaseAgent {
-  constructor(projectId) {
-    super('outline_editor', projectId);
+  constructor(apiProvider = 'deepseek') {
+    super('大纲编辑', 'outline_editor', '你是一位专业的故事大纲编辑，擅长构建完整的故事结构和情节发展。', apiProvider);
     this.contextManager = new ContextManager();
     this.searchService = new SearchService();
     this.outlineData = {
@@ -19,11 +19,6 @@ class OutlineEditorAgent extends BaseAgent {
       chapters: [],
       worldBuilding: {}
     };
-    
-    // 初始化OpenAI客户端
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY || 'your-api-key-here'
-    });
     
     this.currentOutline = null;
     this.storyStructures = new Map();
@@ -71,6 +66,7 @@ class OutlineEditorAgent extends BaseAgent {
    * 生成故事结构建议
    */
   async generateStructure(novelInfo) {
+    console.log('📋 开始生成故事结构建议...');
     this.setCurrentTask('生成故事结构');
     
     const prompt = `请为以下小说设计详细的故事结构：
@@ -92,24 +88,40 @@ class OutlineEditorAgent extends BaseAgent {
 要求结构清晰，逻辑合理，符合该类型小说的特点。`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 1500,
+      console.log('🤖 调用API生成故事结构...');
+      console.log('🔧 API Service类型:', this.apiService.constructor.name);
+      console.log('🔑 API Key存在:', !!this.apiService.apiKey);
+      console.log('🌐 Base URL:', this.apiService.baseURL);
+      
+      const structure = await this.apiService.generateText(prompt, {
+        maxTokens: 1500,
         temperature: 0.7
       });
 
-      const structure = response.choices[0].message.content;
+      console.log('✅ 故事结构生成成功');
+      console.log('📋 生成的结构:', structure.substring(0, 200) + '...');
+      
       this.addToContext(`故事结构建议：${structure}`, 1.0);
       this.completeTask();
       return structure;
     } catch (error) {
-      console.error('生成故事结构失败:', error);
+      console.error('❌ 生成故事结构失败:', error);
+      console.error('❌ 错误详情:', {
+        message: error.message,
+        stack: error.stack,
+        apiService: this.apiService.constructor.name,
+        hasApiKey: !!this.apiService.apiKey
+      });
       this.completeTask();
-      return '暂时无法生成故事结构，请稍后重试。';
+      const fallbackStructure = `《${novelInfo.title}》基本结构框架：
+1. 开篇设定（1-3章）：介绍主角和世界观
+2. 冲突引入（4-6章）：主要矛盾出现
+3. 发展阶段（7-12章）：情节推进和角色成长
+4. 高潮部分（13-15章）：核心冲突爆发
+5. 结局收尾（16-18章）：问题解决和结局`;
+      
+      console.log('🔄 使用备用故事结构');
+      return fallbackStructure;
     }
   }
 
@@ -117,6 +129,7 @@ class OutlineEditorAgent extends BaseAgent {
    * 确定最终情节大纲
    */
   async finalizePlot(authorFeedback, novelInfo) {
+    console.log('📝 开始确定最终情节大纲...');
     this.setCurrentTask('确定最终大纲');
     
     const prompt = `基于作者的反馈，请制定最终的小说大纲：
@@ -138,23 +151,31 @@ ${authorFeedback}
 确保大纲既有创意又具有可执行性。`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 2000,
+      console.log('🤖 调用API制定最终大纲...');
+      console.log('🔧 API Service类型:', this.apiService.constructor.name);
+      console.log('🔑 API Key存在:', !!this.apiService.apiKey);
+      console.log('🌐 Base URL:', this.apiService.baseURL);
+      
+      const finalOutline = await this.apiService.generateText(prompt, {
+        maxTokens: 2000,
         temperature: 0.6
       });
 
-      const finalOutline = response.choices[0].message.content;
+      console.log('✅ 最终大纲制定成功');
+      console.log('📝 大纲内容:', finalOutline.substring(0, 300) + '...');
+      
       this.currentOutline = this.parseOutline(finalOutline);
       this.addToContext(`最终大纲：${finalOutline}`, 1.0);
       this.completeTask();
       return finalOutline;
     } catch (error) {
-      console.error('确定最终大纲失败:', error);
+      console.error('❌ 确定最终大纲失败:', error);
+      console.error('❌ 错误详情:', {
+        message: error.message,
+        stack: error.stack,
+        apiService: this.apiService.constructor.name,
+        hasApiKey: !!this.apiService.apiKey
+      });
       this.completeTask();
       throw new Error('大纲制定失败，请稍后重试');
     }
@@ -291,20 +312,15 @@ ${completedChapters.slice(-3).map(ch => `第${ch.number}章：${ch.title}\n${ch.
 请给出专业的编辑意见。`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 1000,
+      const response = await this.apiService.generateText(prompt, {
+        systemPrompt: this.systemPrompt,
+        maxTokens: 1000,
         temperature: 0.6
       });
 
-      const review = response.choices[0].message.content;
-      this.addToContext(`进度审查：${review}`, 0.8);
+      this.addToContext(`进度审查：${response}`, 0.8);
       this.completeTask();
-      return review;
+      return response;
     } catch (error) {
       console.error('审查进度失败:', error);
       this.completeTask();
@@ -333,19 +349,15 @@ ${completedChapters.slice(-3).map(ch => `第${ch.number}章：${ch.title}\n${ch.
 要求建议具体可行，符合故事逻辑。`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 800,
-        temperature: 0.7
+      const response = await this.apiService.generateText(prompt, {
+        systemPrompt: this.systemPrompt,
+        maxTokens: 2000,
+        temperature: 0.6
       });
 
-      const suggestion = response.choices[0].message.content;
-      this.addToContext(`情节建议：${suggestion}`, 0.7);
-      return suggestion;
+      const suggestions = response;
+      this.addToContext(`情节建议：${suggestions}`, 0.7);
+      return suggestions;
     } catch (error) {
       console.error('生成情节建议失败:', error);
       return '暂时无法生成情节建议，请稍后重试。';
@@ -525,17 +537,13 @@ ${completedChapters.slice(-3).map(ch => `第${ch.number}章：${ch.title}\n${ch.
           5. 章节划分建议
           6. 冲突设置方案`;
   
-          const response = await this.openai.chat.completions.create({
-              model: 'gpt-3.5-turbo',
-              messages: [
-                  { role: 'system', content: '你是一位专业的小说大纲编辑，善于结构设计和情节规划。' },
-                  { role: 'user', content: prompt }
-              ],
-              max_tokens: 1500,
+          const response = await this.apiService.generateText(prompt, {
+              systemPrompt: '你是一位专业的小说大纲编辑，善于结构设计和情节规划。',
+              maxTokens: 1500,
               temperature: 0.7
           });
   
-          const suggestions = response.choices[0].message.content;
+          const suggestions = response;
           
           // 保存建议到上下文
           this.contextManager.addMessage({

@@ -1,18 +1,41 @@
 const { v4: uuidv4 } = require('uuid');
 const ContextManager = require('../utils/ContextManager');
 const DeepSeekService = require('../services/DeepSeekService');
+const OpenAIService = require('../services/OpenAIService');
 
 class BaseAgent {
-  constructor(name, role, systemPrompt) {
+  constructor(name, role, systemPrompt, apiProvider = 'deepseek') {
     this.id = uuidv4();
     this.name = name;
     this.role = role;
     this.systemPrompt = systemPrompt;
     this.contextManager = new ContextManager(name);
-    this.deepSeekService = new DeepSeekService();
+    this.apiProvider = apiProvider;
+    this.setApiService(apiProvider);
     this.isActive = false;
     this.currentTask = null;
     this.createdAt = new Date();
+  }
+
+  /**
+   * 设置API服务
+   */
+  setApiService(provider, apiKey) {
+    const validProviders = ['openai', 'deepseek'];
+    
+    if (!validProviders.includes(provider.toLowerCase())) {
+      throw new Error(`不支持的API提供商: ${provider}。支持的提供商: ${validProviders.join(', ')}`);
+    }
+
+    switch (provider.toLowerCase()) {
+      case 'openai':
+        this.apiService = new OpenAIService(apiKey);
+        break;
+      case 'deepseek':
+      default:
+        this.apiService = new DeepSeekService(apiKey);
+        break;
+    }
   }
 
   /**
@@ -104,11 +127,11 @@ class BaseAgent {
   }
 
   /**
-   * 生成响应 - 使用DeepSeek API
+   * 生成响应 - 使用配置的API服务
    */
   async generateResponse(prompt, context = {}) {
     try {
-      const response = await this.deepSeekService.generateText(prompt, {
+      const response = await this.apiService.generateText(prompt, {
         systemPrompt: this.systemPrompt,
         maxTokens: context.maxTokens || 2000,
         temperature: context.temperature || 0.7

@@ -5,10 +5,11 @@ const fs = require('fs-extra');
 const path = require('path');
 
 class AgentManager {
-  constructor() {
-    this.author = new AuthorAgent();
-    this.outlineEditor = new OutlineEditorAgent();
-    this.styleEditor = new StyleEditorAgent();
+  constructor(apiProvider = 'deepseek') {
+    this.apiProvider = apiProvider;
+    this.author = new AuthorAgent(apiProvider);
+    this.outlineEditor = new OutlineEditorAgent(apiProvider);
+    this.styleEditor = new StyleEditorAgent(apiProvider);
     
     this.currentProject = null;
     this.workflowState = 'idle'; // idle, planning, writing, polishing
@@ -17,6 +18,16 @@ class AgentManager {
     this.projectsDir = path.join(__dirname, '../../data/projects');
     
     this.initializeDataDirectory();
+  }
+
+  /**
+   * 设置API提供商
+   */
+  setApiProvider(provider, apiKey) {
+    this.apiProvider = provider;
+    this.author.setApiService(provider, apiKey);
+    this.outlineEditor.setApiService(provider, apiKey);
+    this.styleEditor.setApiService(provider, apiKey);
   }
 
   /**
@@ -67,21 +78,31 @@ class AgentManager {
    * 执行大纲制定流程
    */
   async executePlanningPhase() {
+    console.log('🎬 开始执行规划阶段...');
+    console.log('📚 项目信息:', this.currentProject);
+    
     if (this.workflowState !== 'planning') {
       throw new Error('当前不在规划阶段');
     }
 
     try {
+      console.log('📊 更新项目状态为规划中...');
+      
+      console.log('👥 创建AI代理...');
+      
+      console.log('🤝 开始大纲协作...');
       // 第一步：作者和大纲编辑协作制定大纲
       const outlineDiscussion = await this.author.collaborateOnOutline(
         this.outlineEditor, 
         this.currentProject
       );
 
+      console.log('💾 保存大纲到项目...');
       // 保存大纲到项目
       this.currentProject.outline = outlineDiscussion.finalOutline;
       this.currentProject.outlineDiscussion = outlineDiscussion;
 
+      console.log('📖 解析大纲为章节...');
       // 解析大纲，生成章节计划
       const parsedOutline = this.outlineEditor.parseOutline(outlineDiscussion.finalOutline);
       this.pendingChapters = parsedOutline.chapters.map(ch => ({
@@ -91,6 +112,9 @@ class AgentManager {
         status: 'pending'
       }));
 
+      console.log('📝 保存章节信息...');
+      
+      console.log('✅ 规划阶段完成，准备开始写作...');
       this.currentProject.status = 'ready_to_write';
       this.workflowState = 'writing';
 
@@ -103,7 +127,7 @@ class AgentManager {
         message: '大纲制定完成，准备开始创作'
       };
     } catch (error) {
-      console.error('大纲制定失败:', error);
+      console.error('❌ 大纲制定失败:', error);
       throw new Error('大纲制定过程中出现错误');
     }
   }

@@ -1,11 +1,11 @@
 const BaseAgent = require('./BaseAgent');
-const OpenAI = require('openai');
+const DeepSeekService = require('../services/DeepSeekService');
 const SearchService = require('../services/SearchService');
 const ContextManager = require('../utils/ContextManager');
 
 class AuthorAgent extends BaseAgent {
-  constructor(projectId) {
-    super('author', projectId);
+  constructor(apiProvider = 'deepseek') {
+    super('作家', 'author', '你是一位专业的小说作家，擅长创作引人入胜的故事情节和生动的人物形象。', apiProvider);
     this.contextManager = new ContextManager();
     this.searchService = new SearchService();
     this.writingContext = {
@@ -14,11 +14,6 @@ class AuthorAgent extends BaseAgent {
       worldBuilding: {},
       writingStyle: null
     };
-    
-    // 初始化OpenAI客户端
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY || 'your-api-key-here'
-    });
   }
 
   /**
@@ -33,27 +28,45 @@ class AuthorAgent extends BaseAgent {
    * 与大纲编辑协作制定大纲
    */
   async collaborateOnOutline(outlineEditor, novelInfo) {
+    console.log('🤝 开始与大纲编辑协作制定大纲...');
     this.setCurrentTask('制定大纲');
     
-    // 发送初始创作想法给大纲编辑
-    const initialIdeas = await this.generateInitialIdeas(novelInfo);
-    await this.communicateWith(outlineEditor, `我对《${novelInfo.title}》的初始创作想法：${initialIdeas}`);
-    
-    // 等待大纲编辑的反馈和建议
-    const outlineDiscussion = await this.discussOutline(outlineEditor, novelInfo);
-    
-    this.completeTask();
-    return outlineDiscussion;
+    try {
+      // 发送初始创作想法给大纲编辑
+      console.log('💭 生成初始创作想法...');
+      const initialIdeas = await this.generateInitialIdeas(novelInfo);
+      
+      console.log('📤 向大纲编辑发送创作想法...');
+      await this.communicateWith(outlineEditor, `我对《${novelInfo.title}》的初始创作想法：${initialIdeas}`);
+      
+      // 等待大纲编辑的反馈和建议
+      console.log('💬 开始大纲讨论...');
+      const outlineDiscussion = await this.discussOutline(outlineEditor, novelInfo);
+      
+      console.log('✅ 大纲协作完成');
+      this.completeTask();
+      return outlineDiscussion;
+    } catch (error) {
+      console.error('❌ 大纲协作失败:', error);
+      throw error;
+    }
   }
 
   /**
    * 生成初始创作想法
    */
   async generateInitialIdeas(novelInfo) {
+    console.log('🎯 开始生成初始创作想法...');
+    console.log('📖 小说信息:', {
+      title: novelInfo.title,
+      genre: novelInfo.genre,
+      description: novelInfo.description
+    });
+
     const prompt = `请为以下小说生成初始创作想法：
 标题：${novelInfo.title}
 类型：${novelInfo.genre}
-主题：${novelInfo.theme}
+主题：${novelInfo.theme || novelInfo.description}
 描述：${novelInfo.description || ''}
 
 请提供：
@@ -66,22 +79,28 @@ class AuthorAgent extends BaseAgent {
 要求简洁明了，重点突出。`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 1000,
+      console.log('🤖 调用API生成创作想法...');
+      const ideas = await this.apiService.generateText(prompt, {
+        maxTokens: 1000,
         temperature: 0.8
       });
 
-      const ideas = response.choices[0].message.content;
+      console.log('✅ 初始创作想法生成成功');
+      console.log('💡 生成的想法:', ideas.substring(0, 200) + '...');
+      
       this.addToContext(`初始创作想法：${ideas}`, 0.9);
       return ideas;
     } catch (error) {
-      console.error('生成初始想法失败:', error);
-      return '暂时无法生成创作想法，请稍后重试。';
+      console.error('❌ 生成初始想法失败:', error);
+      const fallbackIdeas = `基于《${novelInfo.title}》的基本创作框架：
+1. 主角设定：一个面临重大选择的角色
+2. 故事背景：${novelInfo.genre}类型的世界观
+3. 核心冲突：内心与外界的双重挑战
+4. 故事走向：从困境到成长的转变过程
+5. 情感基调：充满希望的成长故事`;
+      
+      console.log('🔄 使用备用创作想法');
+      return fallbackIdeas;
     }
   }
 
@@ -89,13 +108,17 @@ class AuthorAgent extends BaseAgent {
    * 与大纲编辑讨论大纲
    */
   async discussOutline(outlineEditor, novelInfo) {
-    // 这里模拟与大纲编辑的讨论过程
+    console.log('💬 开始大纲讨论...');
+    this.setCurrentTask('与大纲编辑讨论');
+    
     const discussion = {
+      participants: [this.name, outlineEditor.name],
       rounds: [],
       finalOutline: null
     };
 
-    // 第一轮：接收大纲编辑的结构建议
+    // 第一轮：大纲编辑提供结构建议
+    console.log('📋 第一轮：获取结构建议...');
     const structureSuggestion = await outlineEditor.generateStructure(novelInfo);
     discussion.rounds.push({
       from: outlineEditor.name,
@@ -104,6 +127,7 @@ class AuthorAgent extends BaseAgent {
     });
 
     // 第二轮：作者提供反馈和补充
+    console.log('💭 第二轮：提供反馈...');
     const authorFeedback = await this.provideFeedbackOnStructure(structureSuggestion);
     discussion.rounds.push({
       from: this.name,
@@ -112,18 +136,28 @@ class AuthorAgent extends BaseAgent {
     });
 
     // 第三轮：确定最终大纲
-    const finalOutline = await outlineEditor.finalizePlot(authorFeedback, novelInfo);
-    discussion.rounds.push({
-      from: outlineEditor.name,
-      content: finalOutline,
-      timestamp: new Date()
-    });
+    console.log('🎯 第三轮：确定最终大纲...');
+    console.log('🔧 OutlineEditor API Service:', outlineEditor.apiService.constructor.name);
+    console.log('🔑 OutlineEditor API Key存在:', !!outlineEditor.apiService.apiKey);
+    
+    try {
+      const finalOutline = await outlineEditor.finalizePlot(authorFeedback, novelInfo);
+      discussion.rounds.push({
+        from: outlineEditor.name,
+        content: finalOutline,
+        timestamp: new Date()
+      });
 
-    discussion.finalOutline = finalOutline;
-    this.plotOutline = finalOutline;
-    this.addToContext(`最终大纲确定：${finalOutline}`, 1.0);
+      discussion.finalOutline = finalOutline;
+      this.plotOutline = finalOutline;
+      this.addToContext(`最终大纲确定：${finalOutline}`, 1.0);
 
-    return discussion;
+      console.log('✅ 大纲讨论完成');
+      return discussion;
+    } catch (error) {
+      console.error('❌ 大纲讨论中的finalizePlot调用失败:', error);
+      throw error;
+    }
   }
 
   /**
@@ -144,17 +178,13 @@ ${structure}
 请给出具体的建议和理由。`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 800,
-        temperature: 0.7
+      const response = await this.apiService.generateText(prompt, {
+        systemPrompt: this.systemPrompt,
+        maxTokens: 2000,
+        temperature: 0.8
       });
 
-      const feedback = response.choices[0].message.content;
+      const feedback = response;
       this.addToContext(`对大纲结构的反馈：${feedback}`, 0.8);
       return feedback;
     } catch (error) {
@@ -173,17 +203,13 @@ ${structure}
     const prompt = this.buildChapterPrompt(chapterNumber, chapterOutline, context);
     
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 2000,
+      const response = await this.apiService.generateText(prompt, {
+        systemPrompt: this.systemPrompt,
+        maxTokens: 3000,
         temperature: 0.8
       });
 
-      const chapterContent = response.choices[0].message.content;
+      const chapterContent = response;
       
       // 记录章节内容到上下文
       this.addToContext(`第${chapterNumber}章内容：${chapterContent}`, 0.9);
@@ -419,17 +445,13 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.title}: ${result.
 3. 情节发展的建议
 4. 场景描写的参考`;
 
-      const response = await this.openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          { role: 'system', content: '你是一位经验丰富的小说作家，善于从各种资料中提取创作灵感。' },
-          { role: 'user', content: prompt }
-        ],
-        max_tokens: 1000,
+      const response = await this.apiService.generateText(prompt, {
+        systemPrompt: '你是一位经验丰富的小说作家，善于从各种资料中提取创作灵感。',
+        maxTokens: 1000,
         temperature: 0.8
       });
 
-      const inspiration = response.choices[0].message.content;
+      const inspiration = response;
       
       // 保存灵感到上下文
       this.contextManager.addMessage({

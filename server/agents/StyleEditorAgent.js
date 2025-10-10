@@ -1,8 +1,7 @@
 const BaseAgent = require('./BaseAgent');
-const OpenAI = require('openai');
 
 class StyleEditorAgent extends BaseAgent {
-  constructor() {
+  constructor(apiProvider = 'deepseek') {
     super('润色编辑', 'style_editor', `你是一位专业的文字润色编辑，擅长文案优化和风格统一。你的职责包括：
 1. 对作者创作的章节内容进行文案润色
 2. 确保全文写作风格的一致性
@@ -17,11 +16,7 @@ class StyleEditorAgent extends BaseAgent {
 - 严谨的逻辑思维
 - 细致的校对能力
 - 对不同文体风格的深度理解
-- 角色一致性的把控能力`);
-    
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY || 'your-api-key-here'
-    });
+- 角色一致性的把控能力`, apiProvider);
     
     this.establishedStyle = null;
     this.characterProfiles = new Map();
@@ -74,17 +69,13 @@ ${initialChapters.map(ch => `第${ch.number}章：\n${ch.content}`).join('\n\n')
 请提供详细的风格分析报告。`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 1200,
+      const response = await this.apiService.generateText(prompt, {
+        systemPrompt: this.systemPrompt,
+        maxTokens: 1200,
         temperature: 0.5
       });
 
-      const styleAnalysis = response.choices[0].message.content;
+      const styleAnalysis = response;
       this.establishedStyle = this.parseStyleAnalysis(styleAnalysis);
       this.addToContext(`文风基准建立：${styleAnalysis}`, 1.0);
       this.completeTask();
@@ -182,17 +173,13 @@ ${Array.from(this.characterProfiles.entries()).map(([name, profile]) =>
 请提供润色后的完整章节内容：`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 2500,
-        temperature: 0.4
+      const response = await this.apiService.generateText(prompt, {
+        systemPrompt: this.systemPrompt,
+        maxTokens: 3000,
+        temperature: 0.6
       });
 
-      const polishedContent = response.choices[0].message.content;
+      const polishedContent = response;
       
       // 更新角色档案
       this.updateCharacterProfiles(polishedContent);
@@ -311,20 +298,16 @@ ${chapters.map(ch => `第${ch.number}章摘要：${ch.content.substring(0, 300)}
 请提供详细的一致性检查报告。`;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: this.systemPrompt },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 1000,
-        temperature: 0.3
+      const response = await this.apiService.generateText(prompt, {
+        systemPrompt: this.systemPrompt,
+        maxTokens: 1500,
+        temperature: 0.7
       });
 
-      const consistencyReport = response.choices[0].message.content;
-      this.addToContext(`风格一致性检查：${consistencyReport}`, 0.7);
+      const feedback = response;
+      this.addToContext(`风格一致性检查：${feedback}`, 0.7);
       this.completeTask();
-      return consistencyReport;
+      return feedback;
     } catch (error) {
       console.error('检查风格一致性失败:', error);
       this.completeTask();

@@ -105,6 +105,10 @@ class AgentManager {
       console.log('📖 解析大纲为章节...');
       // 解析大纲，生成章节计划
       const parsedOutline = this.outlineEditor.parseOutline(outlineDiscussion.finalOutline);
+      
+      // 修复：设置OutlineEditor的currentOutline
+      this.outlineEditor.currentOutline = parsedOutline;
+      
       this.pendingChapters = parsedOutline.chapters.map(ch => ({
         number: ch.number,
         title: ch.title,
@@ -141,42 +145,108 @@ class AgentManager {
     }
 
     const writtenChapters = [];
-    const chaptersToProcess = this.pendingChapters.slice(0, chaptersToWrite);
+    const maxRetries = 3; // 每章最大重试次数
+    
+    // 确保按章节顺序处理，而不是随机选择
+    const sortedPendingChapters = this.pendingChapters.sort((a, b) => a.number - b.number);
+    const chaptersToProcess = sortedPendingChapters.slice(0, chaptersToWrite);
+
+    console.log(`📝 开始按顺序写作 ${chaptersToProcess.length} 章...`);
+    console.log(`📋 章节顺序: ${chaptersToProcess.map(ch => `第${ch.number}章`).join(', ')}`);
 
     try {
-      // 逐章创作
+      // 逐章按顺序创作，确保连贯性
       for (const chapterPlan of chaptersToProcess) {
-        const chapterOutline = this.outlineEditor.getChapterOutline(chapterPlan.number);
-        const chapter = await this.author.writeChapter(
-          chapterPlan.number, 
-          chapterOutline?.outline || chapterPlan.outline
-        );
+        console.log(`\n🖋️  开始创作第${chapterPlan.number}章...`);
+        
+        let chapter = null;
+        let retryCount = 0;
+        let lastError = null;
 
+        // 重试机制
+        while (retryCount < maxRetries && !chapter) {
+          try {
+            // 获取章节大纲
+            const chapterOutline = this.outlineEditor.getChapterOutline(chapterPlan.number);
+            
+            // 获取前面已完成章节的内容，确保剧情连贯
+            const previousChapters = this.completedChapters
+              .filter(ch => ch.number < chapterPlan.number)
+              .sort((a, b) => a.number - b.number);
+            
+            console.log(`📖 前置章节数量: ${previousChapters.length}`);
+            
+            // 创作章节，传入前面章节的内容作为上下文
+            chapter = await this.author.writeChapter(
+              chapterPlan.number, 
+              chapterOutline?.outline || chapterPlan.outline,
+              previousChapters // 传入前面章节作为上下文
+            );
+
+            console.log(`✅ 第${chapterPlan.number}章创作成功`);
+            break; // 成功则跳出重试循环
+
+          } catch (error) {
+            retryCount++;
+            lastError = error;
+            console.error(`❌ 第${chapterPlan.number}章创作失败 (尝试 ${retryCount}/${maxRetries}):`, error.message);
+            
+            if (retryCount < maxRetries) {
+              console.log(`🔄 等待 ${retryCount * 2} 秒后重试...`);
+              await new Promise(resolve => setTimeout(resolve, retryCount * 2000)); // 递增等待时间
+            }
+          }
+        }
+
+        // 如果重试后仍然失败，停止整个写作流程
+        if (!chapter) {
+          console.error(`💥 第${chapterPlan.number}章经过 ${maxRetries} 次重试后仍然失败，停止写作流程`);
+          throw new Error(`第${chapterPlan.number}章创作失败: ${lastError?.message || '未知错误'}`);
+        }
+
+        // 成功创作后更新状态
         writtenChapters.push(chapter);
         
-        // 更新章节状态
+        // 从待写章节中移除
         const pendingIndex = this.pendingChapters.findIndex(ch => ch.number === chapterPlan.number);
         if (pendingIndex !== -1) {
           this.pendingChapters.splice(pendingIndex, 1);
         }
+        
+        // 添加到已完成章节列表（保持顺序）
+        this.completedChapters.push(chapter);
+        this.completedChapters.sort((a, b) => a.number - b.number);
+
+        // 每完成一章就保存一次，避免数据丢失
+        await this.saveProject();
+        console.log(`💾 第${chapterPlan.number}章已保存`);
       }
+
+      console.log(`🎉 成功完成 ${writtenChapters.length} 章的顺序创作`);
 
       // 如果写了2-3章，进入润色阶段
       if (writtenChapters.length >= 2) {
         this.workflowState = 'polishing';
         const polishResult = await this.executePolishingPhase(writtenChapters);
-        return polishResult;
+        return {
+          status: 'polishing_completed',
+          completedChapters: writtenChapters,
+          remaining: this.pendingChapters.length,
+          message: `完成${writtenChapters.length}章创作并润色`
+        };
       }
 
       return {
         status: 'chapters_written',
-        chapters: writtenChapters,
+        completedChapters: writtenChapters,
         remaining: this.pendingChapters.length,
-        message: `完成${writtenChapters.length}章创作`
+        message: `完成${writtenChapters.length}章顺序创作`
       };
     } catch (error) {
       console.error('写作过程失败:', error);
-      throw new Error('章节创作过程中出现错误');
+      // 保存当前进度，即使出错也不丢失已完成的章节
+      await this.saveProject();
+      throw new Error(`章节创作过程中出现错误: ${error.message}`);
     }
   }
 
@@ -383,6 +453,12 @@ ${chapter.polishedAt ? `润色时间: ${chapter.polishedAt}` : ''}
         this.author.import(projectData.agents.author);
         this.outlineEditor.import(projectData.agents.outlineEditor);
         this.styleEditor.import(projectData.agents.styleEditor);
+      }
+
+      // 修复：如果项目有大纲，重新设置OutlineEditor的currentOutline
+      if (this.currentProject.outline && this.currentProject.outlineDiscussion) {
+        const parsedOutline = this.outlineEditor.parseOutline(this.currentProject.outline);
+        this.outlineEditor.currentOutline = parsedOutline;
       }
 
       return this.currentProject;

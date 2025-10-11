@@ -269,11 +269,15 @@ class NovelGeneratorApp {
                 console.log('✅ 项目创建成功:', result.data);
                 
                 this.currentProject = result.data;
-                this.currentProjectId = result.data.id;
+                this.currentProjectId = result.data.projectId; // 修复：使用正确的字段名
                 
-                // 加入Socket.IO房间
-                this.socket.emit('join-novel', this.currentProjectId);
-                console.log(`🏠 加入项目房间: ${this.currentProjectId}`);
+                // 确保项目ID存在后再加入Socket.IO房间
+                if (this.currentProjectId) {
+                    this.socket.emit('join-novel', this.currentProjectId);
+                    console.log(`🏠 加入项目房间: ${this.currentProjectId}`);
+                } else {
+                    console.error('❌ 项目ID为空，无法加入房间');
+                }
                 
                 this.showProgressSection();
                 this.startNovelGeneration();
@@ -718,11 +722,15 @@ class NovelGeneratorApp {
             
             if (result.success) {
                 this.currentProject = result.data;
-                this.currentProjectId = result.data.id;
+                this.currentProjectId = result.data.id || projectId; // 使用传入的projectId作为备选
                 
-                // 加入Socket.IO房间
-                this.socket.emit('join-novel', this.currentProjectId);
-                console.log(`🏠 加入项目房间: ${this.currentProjectId}`);
+                // 确保项目ID存在后再加入Socket.IO房间
+                if (this.currentProjectId) {
+                    this.socket.emit('join-novel', this.currentProjectId);
+                    console.log(`🏠 加入项目房间: ${this.currentProjectId}`);
+                } else {
+                    console.error('❌ 项目ID为空，无法加入房间');
+                }
                 
                 this.showProgressSection();
                 await this.loadChapters();

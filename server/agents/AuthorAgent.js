@@ -196,13 +196,14 @@ ${structure}
   /**
    * 创作章节内容
    */
-  async writeChapter(chapterNumber, chapterOutline) {
+  async writeChapter(chapterNumber, chapterOutline, previousChapters = []) {
     this.setCurrentTask(`创作第${chapterNumber}章`);
     
     const context = this.getRelevantWritingContext();
-    const prompt = this.buildChapterPrompt(chapterNumber, chapterOutline, context);
+    const prompt = this.buildChapterPrompt(chapterNumber, chapterOutline, context, previousChapters);
     
     try {
+      console.log(`🤖 开始调用API创作第${chapterNumber}章...`);
       const response = await this.apiService.generateText(prompt, {
         systemPrompt: this.systemPrompt,
         maxTokens: 3000,
@@ -210,6 +211,7 @@ ${structure}
       });
 
       const chapterContent = response;
+      console.log(`📝 第${chapterNumber}章创作完成，字数: ${chapterContent.length}`);
       
       // 记录章节内容到上下文
       this.addToContext(`第${chapterNumber}章内容：${chapterContent}`, 0.9);
@@ -220,6 +222,7 @@ ${structure}
       this.completeTask();
       
       return {
+        number: chapterNumber, // 添加number字段以保持一致性
         chapterNumber,
         title: this.extractChapterTitle(chapterContent),
         content: chapterContent,
@@ -227,16 +230,16 @@ ${structure}
         createdAt: new Date()
       };
     } catch (error) {
-      console.error('创作章节失败:', error);
+      console.error(`❌ 创作第${chapterNumber}章失败:`, error);
       this.completeTask();
-      throw new Error('章节创作失败，请稍后重试');
+      throw new Error(`第${chapterNumber}章创作失败: ${error.message}`);
     }
   }
 
   /**
    * 构建章节创作提示词
    */
-  buildChapterPrompt(chapterNumber, chapterOutline, context) {
+  buildChapterPrompt(chapterNumber, chapterOutline, context, previousChapters = []) {
     let prompt = `请创作小说《${this.currentNovel?.title || '未命名'}》的第${chapterNumber}章。
 
 章节大纲：
@@ -244,33 +247,62 @@ ${chapterOutline}
 
 `;
 
-    if (context.previousChapters.length > 0) {
-      prompt += `前面章节摘要：
+    // 如果有前面的章节，提供详细的剧情上下文
+    if (previousChapters && previousChapters.length > 0) {
+      prompt += `前面章节内容（请确保剧情连贯）：
+`;
+      
+      // 提供最近的2-3章的详细内容，或者所有章节如果数量不多
+      const recentChapters = previousChapters.slice(-3); // 最近3章
+      
+      recentChapters.forEach(chapter => {
+        const summary = chapter.content.length > 500 
+          ? chapter.content.substring(0, 500) + '...' 
+          : chapter.content;
+        
+        prompt += `第${chapter.number}章《${chapter.title || ''}》：
+${summary}
+
+`;
+      });
+      
+      if (previousChapters.length > 3) {
+        prompt += `（还有前面${previousChapters.length - 3}章的内容作为背景）
+
+`;
+      }
+    }
+
+    // 传统的上下文信息
+    if (context.previousChapters && context.previousChapters.length > 0) {
+      prompt += `章节摘要：
 ${context.previousChapters.map(ch => `第${ch.number}章：${ch.summary}`).join('\n')}
 
 `;
     }
 
-    if (context.characters.size > 0) {
+    if (context.characters && context.characters.size > 0) {
       prompt += `主要角色信息：
 ${Array.from(context.characters.entries()).map(([name, info]) => `${name}：${info}`).join('\n')}
 
 `;
     }
 
-    if (this.writingStyle.tone) {
-      prompt += `写作风格要求：${this.writingStyle.tone}
+    if (this.writingContext.writingStyle && this.writingContext.writingStyle.tone) {
+      prompt += `写作风格要求：${this.writingContext.writingStyle.tone}
 
 `;
     }
 
     prompt += `创作要求：
 1. 字数控制在1500-2500字
-2. 保持与前面章节的连贯性
-3. 注重人物对话和心理描写
-4. 场景描写要生动具体
-5. 推进主要情节发展
-6. 保持适当的悬念和张力
+2. 严格保持与前面章节的剧情连贯性和逻辑一致性
+3. 角色性格和行为要与前面章节保持一致
+4. 注重人物对话和心理描写
+5. 场景描写要生动具体
+6. 推进主要情节发展
+7. 保持适当的悬念和张力
+8. 如果是第${chapterNumber}章，请确保与第${chapterNumber-1}章的结尾自然衔接
 
 请开始创作：`;
 
@@ -285,9 +317,9 @@ ${Array.from(context.characters.entries()).map(([name, info]) => `${name}：${in
     
     return {
       previousChapters: this.extractPreviousChapters(context),
-      characters: this.characters,
+      characters: this.writingContext.characters, // 修复：使用正确的属性路径
       plotPoints: this.extractPlotPoints(context),
-      writingStyle: this.writingStyle
+      writingStyle: this.writingContext.writingStyle // 修复：使用正确的属性路径
     };
   }
 
@@ -372,7 +404,7 @@ ${Array.from(context.characters.entries()).map(([name, info]) => `${name}：${in
    * 设置写作风格
    */
   setWritingStyle(style) {
-    this.writingStyle = { ...this.writingStyle, ...style };
+    this.writingContext.writingStyle = { ...this.writingContext.writingStyle, ...style }; // 修复：使用正确的属性路径
     this.addToContext(`写作风格更新：${JSON.stringify(style)}`, 0.7);
   }
 
@@ -453,7 +485,7 @@ ${searchResults.map((result, index) => `${index + 1}. ${result.title}: ${result.
 
       const inspiration = response;
       
-      // 保存灵感到上下文
+      // 保存灵到家到上下文
       this.contextManager.addMessage({
         role: 'assistant',
         content: inspiration,

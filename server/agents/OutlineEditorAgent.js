@@ -150,6 +150,16 @@ ${authorFeedback}
 
 确保大纲既有创意又具有可执行性。`;
 
+    // 如果没有API Key，直接使用离线fallback，避免抛错中断流程
+    if (!this.apiService.apiKey) {
+      console.warn('⚠️ 无API Key，使用离线fallback大纲');
+      const fallbackOutline = `最终大纲（离线生成）：\n标题：${novelInfo.title}\n类型：${novelInfo.genre}\n主题：${novelInfo.theme || novelInfo.description || ''}\n\n作者反馈摘要：${(authorFeedback || '').substring(0, 300)}...\n\n第1-3章：开篇设定与人物登场\n- 介绍主角与世界观设定\n- 埋下核心冲突伏笔\n\n第4-6章：冲突引入与第一次转折\n- 冲突显现，主角做出关键选择\n- 第一次明显的情节转折\n\n第7-12章：推进发展与角色成长\n- 推进主线任务，加深矛盾与复杂度\n- 角色关系发展与成长节点\n\n第13-15章：高潮与对抗\n- 核心冲突爆发，正面对抗\n- 关键牺牲与转机\n\n第16-18章：收尾与解决\n- 冲突解决与余波处理\n- 角色命运与主题落点\n\n主要角色\n- 主角：待定\n- 重要配角：待定\n\n情节要点\n- 开端遭遇\n- 中段挫败\n- 最终逆转`;
+      this.currentOutline = this.parseOutline(fallbackOutline);
+      this.addToContext(`最终大纲（fallback）：${fallbackOutline}`, 0.9);
+      this.completeTask();
+      return fallbackOutline;
+    }
+
     try {
       console.log('🤖 调用API制定最终大纲...');
       console.log('🔧 API Service类型:', this.apiService.constructor.name);
@@ -176,8 +186,12 @@ ${authorFeedback}
         apiService: this.apiService.constructor.name,
         hasApiKey: !!this.apiService.apiKey
       });
+      // API失败时使用离线fallback，保障流程可继续
+      const fallbackOutline = `最终大纲（离线生成）：\n标题：${novelInfo.title}\n类型：${novelInfo.genre}\n主题：${novelInfo.theme || novelInfo.description || ''}\n\n作者反馈摘要：${(authorFeedback || '').substring(0, 300)}...\n\n第1-3章：开篇设定与人物登场\n- 介绍主角与世界观设定\n- 埋下核心冲突伏笔\n\n第4-6章：冲突引入与第一次转折\n- 冲突显现，主角做出关键选择\n- 第一次明显的情节转折\n\n第7-12章：推进发展与角色成长\n- 推进主线任务，加深矛盾与复杂度\n- 角色关系发展与成长节点\n\n第13-15章：高潮与对抗\n- 核心冲突爆发，正面对抗\n- 关键牺牲与转机\n\n第16-18章：收尾与解决\n- 冲突解决与余波处理\n- 角色命运与主题落点\n\n主要角色\n- 主角：待定\n- 重要配角：待定\n\n情节要点\n- 开端遭遇\n- 中段挫败\n- 最终逆转`;
+      this.currentOutline = this.parseOutline(fallbackOutline);
+      this.addToContext(`最终大纲（fallback）：${fallbackOutline}`, 0.9);
       this.completeTask();
-      throw new Error('大纲制定失败，请稍后重试');
+      return fallbackOutline;
     }
   }
 

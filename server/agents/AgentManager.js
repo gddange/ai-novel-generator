@@ -112,9 +112,19 @@ class AgentManager {
       this.pendingChapters = parsedOutline.chapters.map(ch => ({
         number: ch.number,
         title: ch.title,
-        outline: ch.content,
+        outline: ch.outline || ch.content,
         status: 'pending'
       }));
+
+      // 去重并排序，确保待写章节与大纲一致且无重复
+      const seen = new Set();
+      this.pendingChapters = this.pendingChapters
+        .filter(ch => {
+          if (seen.has(ch.number)) return false;
+          seen.add(ch.number);
+          return true;
+        })
+        .sort((a, b) => a.number - b.number);
 
       console.log('📝 保存章节信息...');
       
@@ -147,9 +157,18 @@ class AgentManager {
     const writtenChapters = [];
     const maxRetries = 3; // 每章最大重试次数
     
-    // 确保按章节顺序处理，而不是随机选择
-    const sortedPendingChapters = this.pendingChapters.sort((a, b) => a.number - b.number);
-    const chaptersToProcess = sortedPendingChapters.slice(0, chaptersToWrite);
+    // 按大纲顺序选择待写章节，避免非顺序与重复
+    const outlineChapters = (this.outlineEditor.currentOutline?.chapters || []).sort((a, b) => a.number - b.number);
+    const pendingSet = new Set(this.pendingChapters.map(ch => ch.number));
+    const chaptersToProcess = outlineChapters
+      .filter(ch => pendingSet.has(ch.number))
+      .slice(0, chaptersToWrite)
+      .map(ch => ({
+        number: ch.number,
+        title: ch.title,
+        outline: ch.outline || ch.content,
+        status: 'pending'
+      }));
 
     console.log(`📝 开始按顺序写作 ${chaptersToProcess.length} 章...`);
     console.log(`📋 章节顺序: ${chaptersToProcess.map(ch => `第${ch.number}章`).join(', ')}`);

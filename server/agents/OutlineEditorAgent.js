@@ -195,49 +195,78 @@ ${authorFeedback}
     const lines = outlineText.split('\n');
     let currentSection = null;
     let currentChapter = null;
+    let currentChapters = null; // 支持范围章节（如第17-19章）
 
     lines.forEach(line => {
       line = line.trim();
       if (!line) return;
 
-      // 识别章节 - 更灵活的匹配
+      // 先识别范围章节：第x-y章：标题
+      const rangeMatch = line.match(/第\s*(\d+)\s*[-–—至]\s*(\d+)\s*章[：:]\s*(.+)/);
+      if (rangeMatch) {
+        const start = parseInt(rangeMatch[1], 10);
+        const end = parseInt(rangeMatch[2], 10);
+        const baseTitle = rangeMatch[3];
+        currentChapters = [];
+        currentChapter = null;
+
+        for (let n = start; n <= end; n++) {
+          const chObj = {
+            number: n,
+            title: `第${n}章：${baseTitle}`,
+            content: '',
+            outline: baseTitle
+          };
+          outline.chapters.push(chObj);
+          currentChapters.push(chObj);
+        }
+        currentSection = 'chapter';
+        return;
+      }
+
+      // 单一章节：第x章：标题 或 Chapter x: 标题
       const chapterMatch = line.match(/第?(\d+)章[：:]\s*(.+)/) || 
-                          line.match(/Chapter\s+(\d+)[：:]\s*(.+)/) ||
-                          line.match(/(\d+)\.\s*(.+)/) ||
-                          line.match(/第(\d+)章\s+(.+)/);
-      
+                           line.match(/Chapter\s+(\d+)[：:]?\s*(.+)/) ||
+                           line.match(/第(\d+)章\s+(.+)/);
+      // 注意：移除 (\d+)\.\s*(.+) 的匹配，避免列表序号误判为章节
       if (chapterMatch) {
+        currentChapters = null;
         currentChapter = {
-          number: parseInt(chapterMatch[1]),
+          number: parseInt(chapterMatch[1], 10),
           title: chapterMatch[2],
           content: '',
-          outline: chapterMatch[2] // 添加outline字段
+          outline: chapterMatch[2]
         };
         outline.chapters.push(currentChapter);
         currentSection = 'chapter';
         return;
       }
 
-      // 如果在章节内容中，添加到当前章节
-      if (currentSection === 'chapter' && currentChapter && line.length > 5) {
-        if (currentChapter.content) {
-          currentChapter.content += '\n' + line;
-        } else {
-          currentChapter.content = line;
+      // 如果在章节内容中，添加到当前章节（支持范围章节）
+      if (currentSection === 'chapter' && line.length > 5) {
+        if (currentChapters && currentChapters.length > 0) {
+          currentChapters.forEach(ch => {
+            ch.content = ch.content ? ch.content + '\n' + line : line;
+            ch.outline = ch.outline === (ch.title.split('：')[1] || ch.outline)
+              ? line
+              : ch.outline + '\n' + line;
+          });
+          return;
         }
-        // 同时更新outline字段
-        if (currentChapter.outline === currentChapter.title) {
-          currentChapter.outline = line;
-        } else {
-          currentChapter.outline += '\n' + line;
+        if (currentChapter) {
+          currentChapter.content = currentChapter.content ? currentChapter.content + '\n' + line : line;
+          currentChapter.outline = currentChapter.outline === currentChapter.title
+            ? line
+            : currentChapter.outline + '\n' + line;
+          return;
         }
-        return;
       }
 
       // 识别角色
       if (line.includes('角色') || line.includes('人物') || line.includes('主要角色')) {
         currentSection = 'characters';
         currentChapter = null;
+        currentChapters = null;
         return;
       }
 
@@ -245,6 +274,7 @@ ${authorFeedback}
       if (line.includes('情节') || line.includes('转折') || line.includes('剧情')) {
         currentSection = 'plotPoints';
         currentChapter = null;
+        currentChapters = null;
         return;
       }
 
@@ -252,6 +282,7 @@ ${authorFeedback}
       if (line.includes('主题') || line.includes('思想') || line.includes('核心思想')) {
         currentSection = 'themes';
         currentChapter = null;
+        currentChapters = null;
         return;
       }
 
@@ -261,10 +292,28 @@ ${authorFeedback}
       }
     });
 
-    // 如果没有解析到章节，尝试从整个大纲中提取章节信息
+    // 去重并按章节号排序，避免重复编号（如误判导致的1,1,2...）
+    if (outline.chapters.length > 0) {
+      const uniqueMap = new Map();
+      outline.chapters.forEach(ch => {
+        if (uniqueMap.has(ch.number)) {
+          const exist = uniqueMap.get(ch.number);
+          if (ch.outline && ch.outline !== exist.outline) {
+            exist.outline = exist.outline ? exist.outline + '\n' + ch.outline : ch.outline;
+          }
+          if (ch.content && ch.content !== exist.content) {
+            exist.content = exist.content ? exist.content + '\n' + ch.content : ch.content;
+          }
+        } else {
+          uniqueMap.set(ch.number, ch);
+        }
+      });
+      outline.chapters = Array.from(uniqueMap.values()).sort((a, b) => a.number - b.number);
+    }
+
+    // 如果没有解析到章节，使用默认占位章节
     if (outline.chapters.length === 0) {
-      // 简单的章节提取逻辑
-      const chapterCount = 18; // 默认18章
+      const chapterCount = 18;
       for (let i = 1; i <= chapterCount; i++) {
         outline.chapters.push({
           number: i,
@@ -279,9 +328,6 @@ ${authorFeedback}
     return outline;
   }
 
-  /**
-   * 获取章节大纲
-   */
   getChapterOutline(chapterNumber) {
     if (!this.currentOutline) {
       return null;
@@ -295,7 +341,7 @@ ${authorFeedback}
     return {
       number: chapter.number,
       title: chapter.title,
-      outline: chapter.content,
+      outline: chapter.outline || chapter.content, // 使用outline字段，保持与解析一致
       plotPoints: this.getRelevantPlotPoints(chapterNumber),
       characters: this.getActiveCharacters(chapterNumber)
     };

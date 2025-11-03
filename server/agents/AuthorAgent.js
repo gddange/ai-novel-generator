@@ -196,11 +196,11 @@ ${structure}
   /**
    * 创作章节内容
    */
-  async writeChapter(chapterNumber, chapterOutline, previousChapters = []) {
+  async writeChapter(chapterNumber, chapterOutline, previousChapters = [], outlineContext = {}) {
     this.setCurrentTask(`创作第${chapterNumber}章`);
     
     const context = this.getRelevantWritingContext();
-    const prompt = this.buildChapterPrompt(chapterNumber, chapterOutline, context, previousChapters);
+    const prompt = this.buildChapterPrompt(chapterNumber, chapterOutline, context, previousChapters, outlineContext);
     
     try {
       console.log(`🤖 开始调用API创作第${chapterNumber}章...`);
@@ -237,9 +237,9 @@ ${structure}
   }
 
   /**
-   * 构建章节创作提示词
+   * 构建章节创作提示词（增强版）
    */
-  buildChapterPrompt(chapterNumber, chapterOutline, context, previousChapters = []) {
+  buildChapterPrompt(chapterNumber, chapterOutline, context, previousChapters = [], outlineContext = {}) {
     let prompt = `请创作小说《${this.currentNovel?.title || '未命名'}》的第${chapterNumber}章。
 
 章节大纲：
@@ -247,40 +247,58 @@ ${chapterOutline}
 
 `;
 
-    // 如果有前面的章节，提供详细的剧情上下文
-    if (previousChapters && previousChapters.length > 0) {
-      prompt += `前面章节内容（请确保剧情连贯）：
-`;
-      
-      // 提供最近的2-3章的详细内容，或者所有章节如果数量不多
-      const recentChapters = previousChapters.slice(-3); // 最近3章
-      
-      recentChapters.forEach(chapter => {
-        const summary = chapter.content.length > 500 
-          ? chapter.content.substring(0, 500) + '...' 
-          : chapter.content;
-        
-        prompt += `第${chapter.number}章《${chapter.title || ''}》：
-${summary}
+    // 注入当前章的大纲情节点与预期角色
+    const { plotPoints = [], characters = [] } = outlineContext || {};
+    if (plotPoints.length > 0) {
+      prompt += `本章关键情节点（请覆盖且合理展开）：
+${plotPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}
 
 `;
-      });
-      
-      if (previousChapters.length > 3) {
-        prompt += `（还有前面${previousChapters.length - 3}章的内容作为背景）
+    }
+    if (characters.length > 0) {
+      prompt += `本章预期登场角色（优先体现其动机与互动）：
+${characters.join('、')}
+
+`;
+    }
+
+    // 优化前序章节正文注入：最近3章精炼摘要 + 上一章尾段摘录
+    if (previousChapters && previousChapters.length > 0) {
+      const recentChapters = previousChapters.slice(-3);
+
+      // 前情提要：每章160字以内摘要
+      prompt += `前情提要（最近${recentChapters.length}章）：
+${recentChapters.map(ch => {
+        const text = ch.content || '';
+        const summary = text.length > 160 ? text.substring(0, 160) + '...' : text;
+        return `第${ch.number}章《${ch.title || ''}》：${summary}`;
+      }).join('\n')}
+
+`;
+
+      // 上一章尾段关键片段：用于自然承接
+      const lastChapter = previousChapters[previousChapters.length - 1];
+      if (lastChapter && lastChapter.content) {
+        const tailLen = 300;
+        const tail = lastChapter.content.length > tailLen
+          ? lastChapter.content.substring(lastChapter.content.length - tailLen)
+          : lastChapter.content;
+        prompt += `上一章尾段关键片段（请自然承接、保持逻辑延续）：
+${tail}
 
 `;
       }
     }
 
-    // 传统的上下文信息
+    // 历史上下文中的章节摘要（来自ContextManager），作为额外参考
     if (context.previousChapters && context.previousChapters.length > 0) {
-      prompt += `章节摘要：
+      prompt += `历史摘要（系统自动提取）：
 ${context.previousChapters.map(ch => `第${ch.number}章：${ch.summary}`).join('\n')}
 
 `;
     }
 
+    // 主要角色与写作风格
     if (context.characters && context.characters.size > 0) {
       prompt += `主要角色信息：
 ${Array.from(context.characters.entries()).map(([name, info]) => `${name}：${info}`).join('\n')}
@@ -300,9 +318,9 @@ ${Array.from(context.characters.entries()).map(([name, info]) => `${name}：${in
 3. 角色性格和行为要与前面章节保持一致
 4. 注重人物对话和心理描写
 5. 场景描写要生动具体
-6. 推进主要情节发展
+6. 围绕本章关键情节点推进主要情节发展
 7. 保持适当的悬念和张力
-8. 如果是第${chapterNumber}章，请确保与第${chapterNumber-1}章的结尾自然衔接
+8. 与第${chapterNumber-1}章的结尾自然衔接
 
 请开始创作：`;
 

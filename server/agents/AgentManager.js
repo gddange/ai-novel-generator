@@ -195,11 +195,15 @@ class AgentManager {
             
             console.log(`📖 前置章节数量: ${previousChapters.length}`);
             
-            // 创作章节，传入前面章节的内容作为上下文
+            // 创作章节，传入前面章节的内容作为上下文，并将大纲的情节点与预期角色注入
             chapter = await this.author.writeChapter(
               chapterPlan.number, 
               chapterOutline?.outline || chapterPlan.outline,
-              previousChapters // 传入前面章节作为上下文
+              previousChapters, // 传入前面章节作为上下文
+              {
+                plotPoints: chapterOutline?.plotPoints || [],
+                characters: chapterOutline?.characters || []
+              }
             );
 
             console.log(`✅ 第${chapterPlan.number}章创作成功`);

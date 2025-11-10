@@ -156,6 +156,9 @@ ${authorFeedback}
       const fallbackOutline = `最终大纲（离线生成）：\n标题：${novelInfo.title}\n类型：${novelInfo.genre}\n主题：${novelInfo.theme || novelInfo.description || ''}\n\n作者反馈摘要：${(authorFeedback || '').substring(0, 300)}...\n\n第1-3章：开篇设定与人物登场\n- 介绍主角与世界观设定\n- 埋下核心冲突伏笔\n\n第4-6章：冲突引入与第一次转折\n- 冲突显现，主角做出关键选择\n- 第一次明显的情节转折\n\n第7-12章：推进发展与角色成长\n- 推进主线任务，加深矛盾与复杂度\n- 角色关系发展与成长节点\n\n第13-15章：高潮与对抗\n- 核心冲突爆发，正面对抗\n- 关键牺牲与转机\n\n第16-18章：收尾与解决\n- 冲突解决与余波处理\n- 角色命运与主题落点\n\n主要角色\n- 主角：待定\n- 重要配角：待定\n\n情节要点\n- 开端遭遇\n- 中段挫败\n- 最终逆转`;
       this.currentOutline = this.parseOutline(fallbackOutline);
       this.addToContext(`最终大纲（fallback）：${fallbackOutline}`, 0.9);
+      // 初始化角色人设与词典
+      this.currentOutline.characterProfiles = await this.buildCharacterProfiles(novelInfo);
+      this.currentOutline.characterLexicon = await this.buildCharacterLexiconFromOutline();
       this.completeTask();
       return fallbackOutline;
     }
@@ -175,8 +178,9 @@ ${authorFeedback}
       console.log('📝 大纲内容:', finalOutline.substring(0, 300) + '...');
       
       this.currentOutline = this.parseOutline(finalOutline);
-      // 新增：构建主要角色人设文档，保存到currentOutline
+      // 新增：构建主要角色人设文档与角色词典记忆，保存到currentOutline
       this.currentOutline.characterProfiles = await this.buildCharacterProfiles(novelInfo);
+      this.currentOutline.characterLexicon = await this.buildCharacterLexiconFromOutline();
       this.addToContext(`最终大纲：${finalOutline}`, 1.0);
       this.completeTask();
       return finalOutline;
@@ -191,8 +195,9 @@ ${authorFeedback}
       // API失败时使用离线fallback，保障流程可继续
       const fallbackOutline = `最终大纲（离线生成）：\n标题：${novelInfo.title}\n类型：${novelInfo.genre}\n主题：${novelInfo.theme || novelInfo.description || ''}\n\n作者反馈摘要：${(authorFeedback || '').substring(0, 300)}...\n\n第1-3章：开篇设定与人物登场\n- 介绍主角与世界观设定\n- 埋下核心冲突伏笔\n\n第4-6章：冲突引入与第一次转折\n- 冲突显现，主角做出关键选择\n- 第一次明显的情节转折\n\n第7-12章：推进发展与角色成长\n- 推进主线任务，加深矛盾与复杂度\n- 角色关系发展与成长节点\n\n第13-15章：高潮与对抗\n- 核心冲突爆发，正面对抗\n- 关键牺牲与转机\n\n第16-18章：收尾与解决\n- 冲突解决与余波处理\n- 角色命运与主题落点\n\n主要角色\n- 主角：待定\n- 重要配角：待定\n\n情节要点\n- 开端遭遇\n- 中段挫败\n- 最终逆转`;
       this.currentOutline = this.parseOutline(fallbackOutline);
-      // 新增：构建主要角色人设文档，保存到currentOutline
+      // 新增：构建主要角色人设文档与角色词典记忆，保存到currentOutline
       this.currentOutline.characterProfiles = await this.buildCharacterProfiles(novelInfo);
+      this.currentOutline.characterLexicon = await this.buildCharacterLexiconFromOutline();
       this.addToContext(`最终大纲（fallback）：${fallbackOutline}`, 0.9);
       this.completeTask();
       return fallbackOutline;
@@ -363,7 +368,9 @@ ${authorFeedback}
       plotPoints: this.getRelevantPlotPoints(chapterNumber),
       characters: this.getActiveCharacters(chapterNumber),
       // 新增：为本章提供已筛选的人设文档
-      characterProfiles: this.getChapterCharacterProfiles(chapterNumber)
+      characterProfiles: this.getChapterCharacterProfiles(chapterNumber),
+      // 新增：为本章提供已筛选的角色词典记忆
+      characterLexicon: this.getChapterLexicon(chapterNumber)
     };
   }
 
@@ -480,6 +487,144 @@ ${authorFeedback}
     const filtered = {};
     names.forEach(n => { if (all[n]) filtered[n] = all[n]; });
     return filtered;
+  }
+
+  // 新增：根据当前大纲构建初始角色词典记忆
+  async buildCharacterLexiconFromOutline() {
+    const profiles = this.currentOutline?.characterProfiles || {};
+    const chapters = Array.isArray(this.currentOutline?.chapters) ? this.currentOutline.chapters : [];
+    const lexicon = {};
+
+    // 统计每个角色在大纲中的出现章节
+    const nameList = Object.keys(profiles);
+    const appearances = {};
+    nameList.forEach(name => { appearances[name] = []; });
+    chapters.forEach(ch => {
+      const text = String(ch.outline || ch.content || '');
+      nameList.forEach(name => {
+        if (name && text.includes(name)) {
+          appearances[name].push(ch.number);
+        }
+      });
+    });
+
+    // 构建词典条目
+    nameList.forEach(name => {
+      const p = profiles[name] || {};
+      lexicon[name] = {
+        name,
+        role: p.role || '',
+        bio: p.arc || p.motivations || '',
+        relationships: p.relationships || '',
+        conflicts: p.conflicts || '',
+        plannedFunctions: p.function || '',
+        keyScenesPlanned: appearances[name],
+        tags: Array.isArray(p.tags) ? p.tags : [],
+        source: 'outline',
+        lastUpdated: new Date().toISOString()
+      };
+    });
+
+    return lexicon;
+  }
+
+  // 新增：获取本章相关的角色词典（按活跃角色过滤）
+  getChapterLexicon(chapterNumber) {
+    const names = this.getActiveCharacters(chapterNumber) || [];
+    const all = this.currentOutline?.characterLexicon || {};
+    const filtered = {};
+    names.forEach(n => { if (all[n]) filtered[n] = all[n]; });
+    return filtered;
+  }
+
+  // 新增：根据已完成章节内容动态更新角色词典（新增角色、补充出现记录与功能）
+  updateLexiconFromChapter(chapter, chapterOutline = {}) {
+    if (!this.currentOutline) return;
+    if (!this.currentOutline.characterLexicon) this.currentOutline.characterLexicon = {};
+
+    const lex = this.currentOutline.characterLexicon;
+    const text = String(chapter.content || '');
+
+    // 仅从“对话+叙述动词”模式中提取候选名字，降低误报
+    const speechVerbs = '(?:说道|说|问|答|喊|笑|低声道|回道|叫道|冷笑道|沉声道|叹道)';
+    const nameRegex = new RegExp(`([\\u4e00-\\u9fa5]{2,4})(?:[，,：: ]?)${speechVerbs}`, 'g');
+    const matches = [];
+    let m;
+    while ((m = nameRegex.exec(text)) !== null) {
+      const name = (m[1] || '').trim();
+      const idx = m.index;
+      if (name) matches.push({ name, idx });
+    }
+
+    // 统计出现次数
+    const counts = {};
+    matches.forEach(({ name }) => { counts[name] = (counts[name] || 0) + 1; });
+
+    const activeNames = this.getActiveCharacters(chapter.number) || [];
+
+    // 屏蔽明显结构化/非人名的模式与词
+    const bannedNames = new Set(['第一幕','第二幕','第三幕','最终小说大纲','第一章','第二章','章节']);
+    const bannedPrefix = /^(第|章|幕|大纲|情节|结构|建议|标题|摘要|分析)$/;
+
+    // 计算候选与可信度
+    const candidateSet = new Set(matches.map(x => x.name));
+    const candidates = Array.from(candidateSet).filter(name => {
+      if (!name) return false;
+      if (bannedNames.has(name)) return false;
+      if (bannedPrefix.test(name)) return false;
+      const occ = counts[name] || 0;
+      let conf = occ >= 3 ? 0.9 : (occ === 2 ? 0.7 : 0.5);
+      if (activeNames.includes(name)) conf = Math.max(conf, 0.85);
+      return conf >= 0.7; // 仅在较高可信度时新增词条
+    });
+
+    // 对已有词条（已验证）允许低门槛更新出现记录（但不新增）
+    const updatableNames = Array.from(candidateSet).filter(name => lex[name]);
+
+    // 新增或更新
+    candidates.forEach(name => {
+      if (!lex[name]) {
+        const idx = text.indexOf(name);
+        const contextSnippet = (() => {
+          if (idx >= 0) {
+            const start = Math.max(0, idx - 40);
+            const end = Math.min(text.length, idx + 60);
+            return text.substring(start, end).replace(/\n/g, ' ').slice(0, 80);
+          }
+          return `首次出现于第${chapter.number}章。`;
+        })();
+        lex[name] = {
+          name,
+          role: '新角色（写作阶段创建）',
+          bio: contextSnippet,
+          relationships: '',
+          conflicts: '',
+          plannedFunctions: (chapterOutline.plotPoints && chapterOutline.plotPoints[0]) ? `围绕本章：${chapterOutline.plotPoints[0]}` : '围绕当前章节推进情节',
+          keyScenesPlanned: [chapter.number],
+          tags: ['新角色','待完善'],
+          source: 'writing',
+          confidence: Math.min(1, (counts[name] || 1) * 0.35 + (activeNames.includes(name) ? 0.2 : 0)),
+          lastUpdated: new Date().toISOString()
+        };
+      }
+    });
+
+    // 对已有条目，更新出现记录与最近功能（不改变角色基础信息）
+    updatableNames.forEach(name => {
+      const entry = lex[name];
+      const ks = new Set(entry.keyScenesPlanned || []);
+      ks.add(chapter.number);
+      entry.keyScenesPlanned = Array.from(ks).sort((a, b) => a - b);
+      if (chapterOutline.plotPoints && chapterOutline.plotPoints.length > 0) {
+        entry.plannedFunctions = `围绕本章：${chapterOutline.plotPoints.slice(0, 2).join('；')}`;
+      }
+      // 如果之前没有confidence，基于出现次数给一个保守值
+      if (entry.confidence == null) {
+        const occ = counts[name] || 1;
+        entry.confidence = Math.min(1, occ * 0.3 + (activeNames.includes(name) ? 0.2 : 0));
+      }
+      entry.lastUpdated = new Date().toISOString();
+    });
   }
 
   /**
@@ -851,7 +996,8 @@ ${completedChapters.slice(-3).map(ch => `第${ch.number}章：${ch.title}\n${ch.
     return {
       ...base,
       currentOutlineExtras: {
-        characterProfiles: this.currentOutline?.characterProfiles || {}
+        characterProfiles: this.currentOutline?.characterProfiles || {},
+        characterLexicon: this.currentOutline?.characterLexicon || {}
       }
     };
   }

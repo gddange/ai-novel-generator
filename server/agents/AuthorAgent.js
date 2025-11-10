@@ -248,7 +248,7 @@ ${chapterOutline}
 `;
 
     // 注入当前章的大纲情节点与预期角色
-    const { plotPoints = [], characters = [] } = outlineContext || {};
+    const { plotPoints = [], characters = [], characterProfiles = {} } = outlineContext || {};
     if (plotPoints.length > 0) {
       prompt += `本章关键情节点（请覆盖且合理展开）：
 ${plotPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}
@@ -260,6 +260,40 @@ ${plotPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}
 ${characters.join('、')}
 
 `;
+    }
+    // 新增：角色人设文档
+    if (characterProfiles && Object.keys(characterProfiles).length > 0) {
+      const lines = Object.entries(characterProfiles).map(([name, p]) => {
+        const personality = Array.isArray(p.personality) ? p.personality.join('、') : (p.personality || '');
+        const tags = Array.isArray(p.tags) ? p.tags.join('、') : (p.tags || '');
+        return `${name}：\n- 角色定位：${p.role || ''}\n- 功能：${p.function || ''}\n- 性格：${personality}\n- 动机与目标：${p.motivations || ''}；${p.goals || ''}\n- 关系与冲突：${p.relationships || ''}；${p.conflicts || ''}\n- 说话风格：${p.speechStyle || ''}\n- 发展轨迹：${p.arc || ''}\n- 标签：${tags}`;
+      }).join('\n\n');
+      prompt += `角色人设文档（写作须严格遵循）：\n${lines}\n\n`;
+    }
+
+    // 新增：角色词典记忆（精简摘要版）
+    const lex = outlineContext?.characterLexicon || {};
+    if (lex && Object.keys(lex).length > 0) {
+      const lines = Object.entries(lex)
+        .filter(([name, e]) => {
+          if (!e) return false;
+          if (e.source === 'writing') {
+            const conf = typeof e.confidence === 'number' ? e.confidence : 0.5;
+            return conf >= 0.7;
+          }
+          return true;
+        })
+        .map(([name, e]) => {
+          const parts = [];
+          if (e.role) parts.push(`定位：${e.role}`);
+          if (e.bio) parts.push(`经历：${String(e.bio).slice(0, 60)}…`);
+          if (e.plannedFunctions) parts.push(`本章功能：${e.plannedFunctions}`);
+          if (Array.isArray(e.tags) && e.tags.length) parts.push(`标签：${e.tags.join('、')}`);
+          return `${name}（${parts.join('；')}）`;
+        })
+        .slice(0, 20)
+        .join('\n');
+      prompt += `角色词典记忆（供一致性参考，简述版）：\n${lines}\n\n`;
     }
 
     // 优化前序章节正文注入：最近3章精炼摘要 + 上一章尾段摘录
@@ -315,12 +349,14 @@ ${Array.from(context.characters.entries()).map(([name, info]) => `${name}：${in
     prompt += `创作要求：
 1. 字数控制在1500-2500字
 2. 严格保持与前面章节的剧情连贯性和逻辑一致性
-3. 角色性格和行为要与前面章节保持一致
+3. 角色性格和行为要与人设文档保持一致，避免混淆
 4. 注重人物对话和心理描写
 5. 场景描写要生动具体
 6. 围绕本章关键情节点推进主要情节发展
 7. 保持适当的悬念和张力
 8. 与第${chapterNumber-1}章的结尾自然衔接
+9. 严禁擅自改名或使用别称；角色名字必须与人设一致
+10. 若出现新角色，须明确命名并保持后续一致性
 
 请开始创作：`;
 

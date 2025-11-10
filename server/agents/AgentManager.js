@@ -195,7 +195,7 @@ class AgentManager {
             
             console.log(`📖 前置章节数量: ${previousChapters.length}`);
             
-            // 创作章节，传入前面章节的内容作为上下文，并将大纲的情节点与预期角色注入
+            // 创作章节，传入前面章节作为上下文，并将大纲的情节点、预期角色与词典注入
             chapter = await this.author.writeChapter(
               chapterPlan.number, 
               chapterOutline?.outline || chapterPlan.outline,
@@ -204,7 +204,9 @@ class AgentManager {
                 plotPoints: chapterOutline?.plotPoints || [],
                 characters: chapterOutline?.characters || [],
                 // 新增：传递本章角色人设
-                characterProfiles: chapterOutline?.characterProfiles || {}
+                characterProfiles: chapterOutline?.characterProfiles || {},
+                // 新增：传递本章角色词典记忆
+                characterLexicon: chapterOutline?.characterLexicon || {}
               }
             );
 
@@ -231,6 +233,13 @@ class AgentManager {
 
         // 成功创作后更新状态
         writtenChapters.push(chapter);
+        
+        // 新增：用本章内容更新角色词典记忆（包括新增角色）
+        try {
+          this.outlineEditor.updateLexiconFromChapter(chapter, this.outlineEditor.getChapterOutline(chapterPlan.number));
+        } catch (e) {
+          console.warn('更新角色词典记忆失败:', e.message);
+        }
         
         // 从待写章节中移除
         const pendingIndex = this.pendingChapters.findIndex(ch => ch.number === chapterPlan.number);
@@ -262,16 +271,14 @@ class AgentManager {
       }
 
       return {
-        status: 'chapters_written',
+        status: 'writing_completed',
         completedChapters: writtenChapters,
         remaining: this.pendingChapters.length,
-        message: `完成${writtenChapters.length}章顺序创作`
+        message: `完成${writtenChapters.length}章创作`
       };
     } catch (error) {
-      console.error('写作过程失败:', error);
-      // 保存当前进度，即使出错也不丢失已完成的章节
-      await this.saveProject();
-      throw new Error(`章节创作过程中出现错误: ${error.message}`);
+      console.error('❌ 写作流程失败:', error);
+      throw new Error('写作过程中出现错误');
     }
   }
 
@@ -487,6 +494,10 @@ ${chapter.polishedAt ? `润色时间: ${chapter.polishedAt}` : ''}
         const extras = projectData.agents?.outlineEditor?.currentOutlineExtras;
         if (extras?.characterProfiles) {
           this.outlineEditor.currentOutline.characterProfiles = extras.characterProfiles;
+        }
+        // 新增：合并角色词典记忆
+        if (extras?.characterLexicon) {
+          this.outlineEditor.currentOutline.characterLexicon = extras.characterLexicon;
         }
       }
 

@@ -202,7 +202,9 @@ class AgentManager {
               previousChapters, // 传入前面章节作为上下文
               {
                 plotPoints: chapterOutline?.plotPoints || [],
-                characters: chapterOutline?.characters || []
+                characters: chapterOutline?.characters || [],
+                // 新增：传递本章角色人设
+                characterProfiles: chapterOutline?.characterProfiles || {}
               }
             );
 
@@ -478,10 +480,14 @@ ${chapter.polishedAt ? `润色时间: ${chapter.polishedAt}` : ''}
         this.styleEditor.import(projectData.agents.styleEditor);
       }
 
-      // 修复：如果项目有大纲，重新设置OutlineEditor的currentOutline
+      // 修复：如果项目有大纲，重新设置OutlineEditor的currentOutline，并合并人设扩展
       if (this.currentProject.outline && this.currentProject.outlineDiscussion) {
         const parsedOutline = this.outlineEditor.parseOutline(this.currentProject.outline);
         this.outlineEditor.currentOutline = parsedOutline;
+        const extras = projectData.agents?.outlineEditor?.currentOutlineExtras;
+        if (extras?.characterProfiles) {
+          this.outlineEditor.currentOutline.characterProfiles = extras.characterProfiles;
+        }
       }
 
       return this.currentProject;

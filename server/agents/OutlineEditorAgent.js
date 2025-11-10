@@ -175,6 +175,8 @@ ${authorFeedback}
       console.log('📝 大纲内容:', finalOutline.substring(0, 300) + '...');
       
       this.currentOutline = this.parseOutline(finalOutline);
+      // 新增：构建主要角色人设文档，保存到currentOutline
+      this.currentOutline.characterProfiles = await this.buildCharacterProfiles(novelInfo);
       this.addToContext(`最终大纲：${finalOutline}`, 1.0);
       this.completeTask();
       return finalOutline;
@@ -189,6 +191,8 @@ ${authorFeedback}
       // API失败时使用离线fallback，保障流程可继续
       const fallbackOutline = `最终大纲（离线生成）：\n标题：${novelInfo.title}\n类型：${novelInfo.genre}\n主题：${novelInfo.theme || novelInfo.description || ''}\n\n作者反馈摘要：${(authorFeedback || '').substring(0, 300)}...\n\n第1-3章：开篇设定与人物登场\n- 介绍主角与世界观设定\n- 埋下核心冲突伏笔\n\n第4-6章：冲突引入与第一次转折\n- 冲突显现，主角做出关键选择\n- 第一次明显的情节转折\n\n第7-12章：推进发展与角色成长\n- 推进主线任务，加深矛盾与复杂度\n- 角色关系发展与成长节点\n\n第13-15章：高潮与对抗\n- 核心冲突爆发，正面对抗\n- 关键牺牲与转机\n\n第16-18章：收尾与解决\n- 冲突解决与余波处理\n- 角色命运与主题落点\n\n主要角色\n- 主角：待定\n- 重要配角：待定\n\n情节要点\n- 开端遭遇\n- 中段挫败\n- 最终逆转`;
       this.currentOutline = this.parseOutline(fallbackOutline);
+      // 新增：构建主要角色人设文档，保存到currentOutline
+      this.currentOutline.characterProfiles = await this.buildCharacterProfiles(novelInfo);
       this.addToContext(`最终大纲（fallback）：${fallbackOutline}`, 0.9);
       this.completeTask();
       return fallbackOutline;
@@ -357,36 +361,125 @@ ${authorFeedback}
       title: chapter.title,
       outline: chapter.outline || chapter.content, // 使用outline字段，保持与解析一致
       plotPoints: this.getRelevantPlotPoints(chapterNumber),
-      characters: this.getActiveCharacters(chapterNumber)
+      characters: this.getActiveCharacters(chapterNumber),
+      // 新增：为本章提供已筛选的人设文档
+      characterProfiles: this.getChapterCharacterProfiles(chapterNumber)
     };
   }
 
-  /**
-   * 获取相关情节点
-   */
+  // 新增：根据章节大纲文本粗略提取情节要点
   getRelevantPlotPoints(chapterNumber) {
-    if (!this.currentOutline) return [];
-    
-    // 简单的情节点分配逻辑
-    const totalChapters = this.currentOutline.chapters.length;
-    const plotPoints = this.currentOutline.plotPoints;
-    const pointsPerChapter = Math.ceil(plotPoints.length / totalChapters);
-    
-    const startIndex = (chapterNumber - 1) * pointsPerChapter;
-    const endIndex = Math.min(startIndex + pointsPerChapter, plotPoints.length);
-    
-    return plotPoints.slice(startIndex, endIndex);
+    const chapter = this.currentOutline?.chapters?.find(ch => ch.number === chapterNumber);
+    if (!chapter) return [];
+    const text = String(chapter.outline || chapter.content || '');
+    const sentences = text.split(/[。！？!?；;、\n]/).map(s => s.trim()).filter(Boolean);
+    // 取前3-4条作为要点，简单去重
+    return Array.from(new Set(sentences)).slice(0, 4);
   }
 
-  /**
-   * 获取活跃角色
-   */
   getActiveCharacters(chapterNumber) {
     if (!this.currentOutline) return [];
-    
-    // 这里可以根据章节内容智能判断哪些角色会出现
-    // 目前返回所有主要角色
-    return this.currentOutline.characters.slice(0, 3);
+    const chapter = this.currentOutline.chapters.find(ch => ch.number === chapterNumber);
+    if (!chapter) return [];
+    const text = String(chapter.outline || chapter.content || '');
+
+    // 优先根据人设中出现的名字匹配本章大纲文本
+    const profileNames = Object.keys(this.currentOutline.characterProfiles || {});
+    const hits = profileNames.filter(name => name && text.includes(name));
+
+    if (hits.length > 0) {
+      return Array.from(new Set(hits)).slice(0, 4);
+    }
+
+    // 退化策略：从解析到的角色列表中取前几个名字
+    const base = (this.currentOutline.characters || [])
+      .map(line => this.extractCharacterName(line))
+      .filter(Boolean);
+
+    return Array.from(new Set(base)).slice(0, 3);
+  }
+
+  // 新增：构建主要角色人设文档（API优先，失败走离线生成）
+  async buildCharacterProfiles(novelInfo) {
+    const rawNames = Array.isArray(this.currentOutline?.characters) ? this.currentOutline.characters : [];
+    const names = rawNames.map(line => this.extractCharacterName(line)).filter(Boolean);
+    const baseNames = names.length > 0 ? names.slice(0, 5) : ['主角', '搭档', '对手', '导师', '重要配角'];
+    const uniqNames = Array.from(new Set(baseNames));
+
+    const schemaHint = {
+      fields: ['name','role','function','personality','motivations','goals','relationships','conflicts','speechStyle','arc','tags']
+    };
+
+    // 尝试使用API生成结构化人设
+    if (this.apiService?.apiKey) {
+      const prompt = `请基于以下小说信息与当前大纲，生成主要角色的人设文档（JSON数组，每个对象必须包含：name, role, function, personality(数组), motivations, goals, relationships, conflicts, speechStyle, arc, tags(数组)）：\n\n小说信息：\n${JSON.stringify(novelInfo, null, 2)}\n\n主要角色候选：${uniqNames.join('、')}\n\n当前大纲摘要（前400字）：\n${(this.currentOutline?.chapters?.map(ch=>ch.outline).join('\n')||'').substring(0,400)}\n\n请严格输出合法JSON，仅包含数组本体，不要额外文字。`;
+      try {
+        const raw = await this.apiService.generateText(prompt, { maxTokens: 1200, temperature: 0.4 });
+        const jsonText = raw.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '');
+        const arr = JSON.parse(jsonText);
+        const profiles = {};
+        arr.forEach(p => { if (p && p.name) profiles[p.name] = p; });
+        if (Object.keys(profiles).length > 0) return profiles;
+      } catch (e) {
+        console.warn('角色人设API生成失败，使用离线构建:', e.message);
+      }
+    }
+
+    // 离线构建人设
+    const profiles = {};
+    const genre = novelInfo.genre || '';
+    const theme = novelInfo.theme || novelInfo.description || '';
+    const defaults = {
+      roleMap: {
+        '主角': '推动主线的核心视角角色',
+        '搭档': '协助主角，提供支持与反差',
+        '对手': '制造冲突与压力的主要对抗者',
+        '导师': '给予关键指引与价值观影响',
+        '重要配角': '在关键节点影响剧情走向'
+      },
+      speechMap: {
+        '主角': '直接、略显冲动但真诚',
+        '搭档': '幽默、轻松、缓和紧张气氛',
+        '对手': '克制尖锐、带讽刺意味',
+        '导师': '稳重、有智慧、用比喻',
+        '重要配角': '朴实、直白，偶尔情绪化'
+      }
+    };
+
+    uniqNames.forEach((name, idx) => {
+      const role = defaults.roleMap[name] || (idx===0? '核心视角角色':'关键配角');
+      profiles[name] = {
+        name,
+        role,
+        function: `在${genre}题材下，围绕“${theme}”推动情节的职责`,
+        personality: ['鲜明','一致','有弱点'],
+        motivations: '与主题相关的内在驱动力',
+        goals: '短期目标随章节推进，长期目标贯穿全书',
+        relationships: '与主角/对手存在清晰关系链（合作/竞争/依赖）',
+        conflicts: '基于价值观或目标差异形成的现实冲突',
+        speechStyle: defaults.speechMap[name] || '自然口语化，保持专属表达习惯',
+        arc: '从初始状态到关键事件的变化轨迹（至少两次拐点）',
+        tags: ['一致性','动机明确','有成长']
+      };
+    });
+
+    return profiles;
+  }
+
+  // 新增：从角色行文本中抽取角色名
+  extractCharacterName(line) {
+    if (!line) return null;
+    const m = String(line).match(/^[•\-\*\d\.\s]*([^：:，,\-]+)(?:[：:，,\-].*)?$/);
+    return m ? m[1].trim() : String(line).trim().slice(0, 8);
+  }
+
+  // 新增：获取本章相关的人设文档
+  getChapterCharacterProfiles(chapterNumber) {
+    const names = this.getActiveCharacters(chapterNumber) || [];
+    const all = this.currentOutline?.characterProfiles || {};
+    const filtered = {};
+    names.forEach(n => { if (all[n]) filtered[n] = all[n]; });
+    return filtered;
   }
 
   /**
@@ -751,6 +844,22 @@ ${completedChapters.slice(-3).map(ch => `第${ch.number}章：${ch.title}\n${ch.
               totalResults: 0
           };
       }
+  }
+  // 覆盖导出，持久化人设扩展
+  export() {
+    const base = super.export();
+    return {
+      ...base,
+      currentOutlineExtras: {
+        characterProfiles: this.currentOutline?.characterProfiles || {}
+      }
+    };
+  }
+
+  // 覆盖导入，保留人设扩展（真正合并在AgentManager.loadProject中进行）
+  import(data) {
+    super.import(data);
+    this._persistedOutlineExtras = data?.currentOutlineExtras || {};
   }
 }
 

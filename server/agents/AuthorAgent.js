@@ -92,6 +92,9 @@ class AuthorAgent extends BaseAgent {
       return ideas;
     } catch (error) {
       console.error('❌ 生成初始想法失败:', error);
+      if (!this.isFallbackEnabled()) {
+        throw error;
+      }
       const fallbackIdeas = `基于《${novelInfo.title}》的基本创作框架：
 1. 主角设定：一个面临重大选择的角色
 2. 故事背景：${novelInfo.genre}类型的世界观
@@ -189,6 +192,9 @@ ${structure}
       return feedback;
     } catch (error) {
       console.error('生成反馈失败:', error);
+      if (!this.isFallbackEnabled()) {
+        throw error;
+      }
       return '暂时无法生成反馈，请稍后重试。';
     }
   }
@@ -232,8 +238,155 @@ ${structure}
     } catch (error) {
       console.error(`❌ 创作第${chapterNumber}章失败:`, error);
       this.completeTask();
+      if (this.isFallbackEnabled()) {
+        const offline = this.composeOfflineChapter(chapterNumber, chapterOutline, previousChapters, outlineContext);
+        return {
+          number: chapterNumber,
+          chapterNumber,
+          title: this.extractChapterTitle(offline) || `第${chapterNumber}章（离线生成）`,
+          content: offline,
+          wordCount: offline.length,
+          createdAt: new Date()
+        };
+      }
       throw new Error(`第${chapterNumber}章创作失败: ${error.message}`);
     }
+  }
+
+  /**
+   * 离线兜底：根据大纲与上下文生成章节草稿
+   */
+  composeOfflineChapter(chapterNumber, chapterOutline, previousChapters = [], outlineContext = {}) {
+    const prevSummary = previousChapters.map(ch => `第${ch.number}章回顾：${(ch.content || '').slice(0, 160)}...`).join('\n');
+    const points = (outlineContext.plotPoints || []).map((p,i)=>`- ${i+1}. ${p}`).join('\n');
+    const charsArr = (outlineContext.characters || []);
+    const chars = charsArr.map((c,i)=>`- ${i+1}. ${c}`).join('\n');
+
+    const profileLines = [];
+    const profiles = outlineContext.characterProfiles || {};
+    for (const name of Object.keys(profiles || {})) {
+      const p = profiles[name];
+      profileLines.push(`- ${name}：${typeof p==='string' ? p : [p?.role,p?.traits?.join('、'),p?.goal].filter(Boolean).join('；')}`);
+    }
+
+    const lexicon = outlineContext.characterLexicon || {};
+    const lexiconLines = Object.keys(lexicon).slice(0, 10).map(n => `- ${n}：${Array.isArray(lexicon[n]) ? lexicon[n].slice(0,3).join('、') : (lexicon[n]?.traits||[]).slice(0,3).join('、')}`);
+
+    const recentSummaries = outlineContext.recentSummaries || [];
+    const summariesBlock = recentSummaries.map(s => `- 第${s.number}章摘要：${s.summary?.slice(0,160) || ''}`).join('\n');
+
+    const leadChar = charsArr[0] || '主角';
+
+    const content = [
+      `# 第${chapterNumber}章`,
+      '',
+      '【前情提要】',
+      prevSummary || summariesBlock || '无',
+      '',
+      '【大纲要点】',
+      chapterOutline || '（无大纲，采用自由叙述）',
+      '',
+      '【关键情节点】',
+      points || '（未提供）',
+      '',
+      '【登场角色】',
+      chars || '（未提供）',
+      '',
+      '【角色人设提示】',
+      profileLines.join('\n') || '（未提供）',
+      '',
+      '【记忆词典】',
+      lexiconLines.join('\n') || '（未提供）',
+      '',
+      '【故事正文】',
+      `夜色像一层薄纱笼罩着街巷。${leadChar}在微弱的路灯下整理散乱的线索片段，记忆里那句若隐若现的低语忽远忽近。`,
+      '他将零碎的事实一一摆开，试图让它们像齿轮般咬合。每当一个缺口被填补，另一个更大的空洞便在黑暗中显形。',
+      '与此同时，一个熟悉的身影从拐角处出现，带来新的证词，也带来新的疑问。',
+      '在这章里，角色之间的信任与怀疑交替生长，线索与误导纠缠成网，直至一处被忽略的细节忽然对齐，推开下一扇门。',
+      '',
+      '【本章结尾】',
+      '他停下脚步，凝视那张被折角的照片，终于意识到：真相并不在眼前，而躲在下一段记忆背后。'
+    ].join('\n');
+
+    return content;
+  }
+
+  /**
+   * 写作前react阶段：审阅前序、对齐大纲、人设，明确本章目标与人物，并将未出场角色加入角色词典记忆
+   */
+  async reactBeforeWriting(chapterNumber, chapterOutline, previousChapters = [], outlineContext = {}) {
+    this.setCurrentTask(`react前置分析：第${chapterNumber}章`);
+
+    const objectives = Array.from(new Set((outlineContext.plotPoints || []).filter(Boolean))).slice(0, 4);
+    const plannedSet = new Set([...(outlineContext.characters || []), ...Object.keys(outlineContext.characterProfiles || {})]);
+
+    // 已出场角色：来自持久化摘要
+    const appeared = new Set();
+    const summaries = Array.isArray(outlineContext.recentSummaries) ? outlineContext.recentSummaries : [];
+    summaries.forEach(s => (Array.isArray(s.characters) ? s.characters : []).forEach(n => { if (n) appeared.add(n); }));
+
+    // 已出场角色：来自前序章节正文（对话动词语境）
+    const speechVerbs = '(?:说道|说|问|答|喊|笑|低声道|回道|叫道|冷笑道|沉声道|叹道)';
+    const nameRegex = new RegExp(`([\\u4e00-\\u9fa5]{2,4})(?:[，,：: ]?)${speechVerbs}`, 'g');
+    (previousChapters || []).forEach(ch => {
+      const text = String(ch.content || '');
+      let m; while ((m = nameRegex.exec(text)) !== null) {
+        const name = (m[1] || '').trim();
+        if (name) appeared.add(name);
+      }
+    });
+
+    // 也从本章大纲文本中抽取作为种子
+    const outlineText = String(chapterOutline || '');
+    let m2; const outlineNameRegex = /([\\u4e00-\\u9fa5]{2,4})/g;
+    while ((m2 = outlineNameRegex.exec(outlineText)) !== null) {
+      const token = (m2[1] || '').trim();
+      if (token && token.length >= 2 && token.length <= 4) plannedSet.add(token);
+    }
+
+    // 屏蔽结构词
+    const bannedNames = new Set(['第一幕','第二幕','第三幕','最终小说大纲','第一章','第二章','章节']);
+    const bannedPrefix = /^(第|章|幕|大纲|情节|结构|建议|标题|摘要|分析)$/;
+
+    const plannedCharacters = Array.from(plannedSet).filter(n => n && !bannedNames.has(n) && !bannedPrefix.test(n));
+    const appearedCharacters = Array.from(appeared);
+    const newCharacters = plannedCharacters.filter(n => !appeared.has(n));
+
+    // 生成词典更新
+    const lexiconUpdates = {};
+    newCharacters.forEach(name => {
+      lexiconUpdates[name] = {
+        name,
+        role: '预定出场角色（react阶段）',
+        bio: `计划在第${chapterNumber}章出场。`,
+        relationships: '',
+        conflicts: '',
+        plannedFunctions: objectives[0] ? `支撑本章：${objectives[0]}` : '支撑本章剧情',
+        keyScenesPlanned: [chapterNumber],
+        tags: ['预定','react'],
+        source: 'react',
+        lastUpdated: new Date().toISOString()
+      };
+    });
+
+    const note = [
+      `React阶段规划 - 第${chapterNumber}章`,
+      `目标：${objectives.join('；') || '未提供'}`,
+      `预定角色：${plannedCharacters.join('、') || '未提供'}`,
+      `已出场角色（截止上一章）：${appearedCharacters.join('、') || '无'}`,
+      `新增入词典：${newCharacters.join('、') || '无'}`
+    ].join('\n');
+
+    this.addToContext(note, 0.85);
+    this.completeTask();
+
+    return {
+      objectives,
+      plannedCharacters,
+      appearedCharacters,
+      newCharacters,
+      lexiconUpdates
+    };
   }
 
   /**
@@ -255,12 +408,89 @@ ${plotPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}
 
 `;
     }
-    if (characters.length > 0) {
-      prompt += `本章预期登场角色（优先体现其动机与互动）：
-${characters.join('、')}
 
-`;
+    // 预期登场角色：融合大纲给出与前序章节实际出现的高频名字，过滤结构词
+    {
+      const bannedNames = new Set(['第一幕','第二幕','第三幕','最终小说大纲','第一章','第二章','章节']);
+      const bannedPrefix = /^(第|章|幕|大纲|情节|结构|建议|标题|摘要|分析)$/;
+      const isNameLike = (s) => /^[\u4e00-\u9fa5]{2,4}$/.test(s);
+      const surnameSet = new Set('赵钱孙李周吴郑王冯陈蒋沈韩杨朱秦许何吕施张孔曹严华金魏陶姜谢邹喻苏潘葛范彭鲁韦马方俞袁柳唐罗薛顾丁邓霍崔贾傅包欧司上林梁刘胡高郭文程邱康汪田董于章云'.split(''));
+      const compoundSurnames = ['欧阳','司马','上官','诸葛','夏侯','太史','端木','东方','独孤','南宫'];
+      const validSurname = (s) => compoundSurnames.some(p=>s.startsWith(p)) || surnameSet.has(s[0]);
+      const isNicknameSurname = (s) => s.length===2 && ['老','小','阿'].includes(s[0]) && surnameSet.has(s[1]);
+      const isValidPersonName = (s) => isNameLike(s) && (validSurname(s) || isNicknameSurname(s)) && !bannedNames.has(s) && !bannedPrefix.test(s);
+      const pronouns = new Set(['我','你','他','她','它','我们','你们','他们','她们','它们']);
+
+      const outlineNames = (characters || []).filter(n => n && isValidPersonName(n) && !pronouns.has(n));
+
+      // 从前序章节正文中提取高频名字（对话动词语境），增强稳定性
+      const speechVerbs = '(?:说道|说|问|答|喊|笑|低声道|回道|叫道|冷笑道|沉声道|叹道)';
+      const nameRegex = new RegExp(`[“\s，,：:]([\\u4e00-\\u9fa5]{2,4})(?:[，,：: ]?)${speechVerbs}`, 'g');
+      const counts = {};
+      (previousChapters || []).slice(-3).forEach(ch => {
+        const text = String(ch.content || '');
+        let m; while ((m = nameRegex.exec(text)) !== null) {
+          const name = (m[1] || '').trim();
+          if (name) counts[name] = (counts[name] || 0) + 1;
+        }
+      });
+      const prevNames = Object.entries(counts)
+        .filter(([n, c]) => isValidPersonName(n) && !pronouns.has(n) && c >= 2)
+        .sort((a, b) => b[1] - a[1])
+        .map(([n]) => n)
+        .slice(0, 4);
+
+      // 兜底：从情节点文本中抽取名字，要求以非汉字边界包围，避免“林默想为”等误配
+      const extractNamesFromText = (text) => {
+        const out = new Set();
+        const t = String(text || '');
+        const SUR_CLASS = '[' + Array.from(surnameSet).join('') + ']';
+        const reSingle2 = new RegExp(`${SUR_CLASS}[\u4e00-\u9fa5]{1}`, 'g');
+        const reSingle3 = new RegExp(`${SUR_CLASS}[\u4e00-\u9fa5]{2}`, 'g');
+        const reCompound = new RegExp(`(?:${compoundSurnames.join('|')})[\u4e00-\u9fa5]{2}`, 'g');
+        const reNickname = new RegExp(`[老小阿]${SUR_CLASS}`, 'g');
+        const pushFiltered = (token) => {
+          const n = (token || '').trim();
+          if (!n) return;
+          if (pronouns.has(n) || bannedNames.has(n) || bannedPrefix.test(n)) return;
+          const len = n.length;
+          const badTailChars = new Set(['想','说','问','在','有','将','把','与','和','及','会','能','要','已','未','等','像','画','给','的','里','中','上','下','前','后','创']);
+          const badGivenChars = new Set(['有','在','将','把','与','和','及','会','能','要','已','未','等','像','画','给','的','里','中','上','下','前','后','说','问','想','是','肖']);
+          
+          if (len === 2) {
+            // 单姓+1名 或 昵称姓
+            if (!(validSurname(n) || isNicknameSurname(n))) return;
+            // 单姓两字名的第二字黑名单拦截，如“张肖”、“何有”
+            if (validSurname(n) && badGivenChars.has(n[1])) return;
+          } else if (len === 3) {
+            // 单姓+2名
+            if (!validSurname(n)) return;
+            if (badTailChars.has(n[2])) return;
+          } else if (len === 4) {
+            // 复姓+2名
+            if (!compoundSurnames.some(p => n.startsWith(p))) return;
+          } else {
+            return;
+          }
+          out.add(n);
+        };
+        (t.match(reSingle2) || []).forEach(pushFiltered);
+        (t.match(reSingle3) || []).forEach(pushFiltered);
+        (t.match(reCompound) || []).forEach(pushFiltered);
+        (t.match(reNickname) || []).forEach(pushFiltered);
+        return Array.from(out);
+      };
+
+      const plotText = Array.isArray(plotPoints) ? plotPoints.join('\n') : String(plotPoints || '');
+      const plotNames = extractNamesFromText(plotText).slice(0, 6);
+
+      const expected = Array.from(new Set([ ...plotNames, ...outlineNames, ...prevNames ])).slice(0, 6);
+      if (expected.length > 0) {
+        prompt += `本章预期登场角色（优先体现其动机与互动）：\n${expected.join('、')}\n\n`;
+      }
+
     }
+
     // 新增：角色人设文档
     if (characterProfiles && Object.keys(characterProfiles).length > 0) {
       const lines = Object.entries(characterProfiles).map(([name, p]) => {
@@ -297,19 +527,27 @@ ${characters.join('、')}
     }
 
     // 优化前序章节正文注入：最近3章精炼摘要 + 上一章尾段摘录
-    if (previousChapters && previousChapters.length > 0) {
+    const persistedSummaries = Array.isArray(outlineContext?.recentSummaries) ? outlineContext.recentSummaries : [];
+    if (persistedSummaries.length > 0) {
+      // 使用持久化摘要，保证一致性与更高压缩质量
+      prompt += `前情提要（基于持久化摘要，最近${persistedSummaries.length}章）：\n${persistedSummaries.map(s => `第${s.chapterNumber}章《${s.title || ''}》：${String(s.summary || '').slice(0, 180)}`).join('\n')}\n\n`;
+      // 仍保留上一章尾段以承接口感
+      const lastPrev = previousChapters && previousChapters.length > 0 ? previousChapters[previousChapters.length - 1] : null;
+      if (lastPrev && lastPrev.content) {
+        const tailLen = 300;
+        const tail = lastPrev.content.length > tailLen
+          ? lastPrev.content.substring(lastPrev.content.length - tailLen)
+          : lastPrev.content;
+        prompt += `上一章尾段关键片段（请自然承接、保持逻辑延续）：\n${tail}\n\n`;
+      }
+    } else if (previousChapters && previousChapters.length > 0) {
       const recentChapters = previousChapters.slice(-3);
-
       // 前情提要：每章160字以内摘要
-      prompt += `前情提要（最近${recentChapters.length}章）：
-${recentChapters.map(ch => {
+      prompt += `前情提要（最近${recentChapters.length}章）：\n${recentChapters.map(ch => {
         const text = ch.content || '';
         const summary = text.length > 160 ? text.substring(0, 160) + '...' : text;
         return `第${ch.number}章《${ch.title || ''}》：${summary}`;
-      }).join('\n')}
-
-`;
-
+      }).join('\n')}\n\n`;
       // 上一章尾段关键片段：用于自然承接
       const lastChapter = previousChapters[previousChapters.length - 1];
       if (lastChapter && lastChapter.content) {
@@ -317,10 +555,7 @@ ${recentChapters.map(ch => {
         const tail = lastChapter.content.length > tailLen
           ? lastChapter.content.substring(lastChapter.content.length - tailLen)
           : lastChapter.content;
-        prompt += `上一章尾段关键片段（请自然承接、保持逻辑延续）：
-${tail}
-
-`;
+        prompt += `上一章尾段关键片段（请自然承接、保持逻辑延续）：\n${tail}\n\n`;
       }
     }
 

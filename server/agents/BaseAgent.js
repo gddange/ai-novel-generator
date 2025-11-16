@@ -2,6 +2,9 @@ const { v4: uuidv4 } = require('uuid');
 const ContextManager = require('../utils/ContextManager');
 const DeepSeekService = require('../services/DeepSeekService');
 const OpenAIService = require('../services/OpenAIService');
+const KimiService = require('../services/KimiService');
+const QwenService = require('../services/QwenService');
+const GeminiService = require('../services/GeminiService');
 
 class BaseAgent {
   constructor(name, role, systemPrompt, apiProvider = 'deepseek') {
@@ -15,23 +18,42 @@ class BaseAgent {
     this.isActive = false;
     this.currentTask = null;
     this.createdAt = new Date();
+    // 新增：兜底开关（严格模式禁用兜底）
+    this.fallbackEnabled = !(process.env.STRICT_API_MODE === 'true' || process.env.FALLBACK_ENABLED === 'false');
   }
+
+  // 新增：兜底开关方法
+  isFallbackEnabled() { return this.fallbackEnabled; }
+  setFallbackEnabled(enabled) { this.fallbackEnabled = !!enabled; }
 
   /**
    * 设置API服务
    */
   setApiService(provider, apiKey) {
-    const validProviders = ['openai', 'deepseek'];
+    const normalized = (provider || '').toLowerCase();
+    const validProviders = ['openai', 'gpt', 'deepseek', 'kimi', 'qwen', 'gemini'];
     
-    if (!validProviders.includes(provider.toLowerCase())) {
+    if (!validProviders.includes(normalized)) {
       throw new Error(`不支持的API提供商: ${provider}。支持的提供商: ${validProviders.join(', ')}`);
     }
 
-    switch (provider.toLowerCase()) {
+    switch (normalized) {
       case 'openai':
+      case 'gpt':
         this.apiService = new OpenAIService(apiKey);
         break;
       case 'deepseek':
+        this.apiService = new DeepSeekService(apiKey);
+        break;
+      case 'kimi':
+        this.apiService = new KimiService(apiKey);
+        break;
+      case 'qwen':
+        this.apiService = new QwenService(apiKey);
+        break;
+      case 'gemini':
+        this.apiService = new GeminiService(apiKey);
+        break;
       default:
         this.apiService = new DeepSeekService(apiKey);
         break;

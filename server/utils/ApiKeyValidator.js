@@ -5,7 +5,7 @@ class ApiKeyValidator {
   /**
    * 验证API Key格式
    * @param {string} apiKey - API Key
-   * @param {string} provider - API提供商 ('openai' 或 'deepseek')
+   * @param {string} provider - API提供商 ('openai'|'gpt'|'deepseek'|'kimi'|'qwen'|'gemini')
    * @returns {Object} 验证结果
    */
   static validateApiKey(apiKey, provider) {
@@ -27,12 +27,20 @@ class ApiKeyValidator {
       };
     }
 
-    // 根据提供商进行特定验证
-    switch (provider.toLowerCase()) {
+    const normalized = (provider || '').toLowerCase();
+
+    switch (normalized) {
       case 'openai':
+      case 'gpt':
         return this.validateOpenAIKey(apiKey);
       case 'deepseek':
         return this.validateDeepSeekKey(apiKey);
+      case 'kimi':
+        return this.validateKimiKey(apiKey);
+      case 'qwen':
+        return this.validateQwenKey(apiKey);
+      case 'gemini':
+        return this.validateGeminiKey(apiKey);
       default:
         return {
           valid: false,
@@ -43,11 +51,8 @@ class ApiKeyValidator {
 
   /**
    * 验证OpenAI API Key格式
-   * @param {string} apiKey - OpenAI API Key
-   * @returns {Object} 验证结果
    */
   static validateOpenAIKey(apiKey) {
-    // OpenAI API Key通常以sk-开头
     if (!apiKey.startsWith('sk-')) {
       return {
         valid: false,
@@ -55,27 +60,20 @@ class ApiKeyValidator {
       };
     }
 
-    // 检查长度（OpenAI API Key通常为51个字符）
-    if (apiKey.length < 40 || apiKey.length > 60) {
+    if (apiKey.length < 40 || apiKey.length > 100) {
       return {
         valid: false,
         error: 'OpenAI API Key长度不正确'
       };
     }
 
-    return {
-      valid: true,
-      sanitized: apiKey.trim()
-    };
+    return { valid: true, sanitized: apiKey.trim() };
   }
 
   /**
    * 验证DeepSeek API Key格式
-   * @param {string} apiKey - DeepSeek API Key
-   * @returns {Object} 验证结果
    */
   static validateDeepSeekKey(apiKey) {
-    // DeepSeek API Key通常以sk-开头
     if (!apiKey.startsWith('sk-')) {
       return {
         valid: false,
@@ -83,7 +81,6 @@ class ApiKeyValidator {
       };
     }
 
-    // 基本长度检查 - DeepSeek API Key应该有合理的长度
     if (apiKey.length < 32) {
       return {
         valid: false,
@@ -91,7 +88,6 @@ class ApiKeyValidator {
       };
     }
 
-    // 检查是否包含有效字符（字母数字和连字符）
     const validPattern = /^sk-[a-zA-Z0-9]+$/;
     if (!validPattern.test(apiKey)) {
       return {
@@ -100,16 +96,62 @@ class ApiKeyValidator {
       };
     }
 
-    return {
-      valid: true,
-      sanitized: apiKey.trim()
-    };
+    return { valid: true, sanitized: apiKey.trim() };
+  }
+
+  /**
+   * 验证Kimi(Moonshot) API Key格式
+   */
+  static validateKimiKey(apiKey) {
+    // Moonshot通常也使用sk-前缀；若无前缀则要求长度>=32
+    const validPattern = /^(sk-[a-zA-Z0-9]+|[A-Za-z0-9-_]{32,})$/;
+    if (!validPattern.test(apiKey)) {
+      return {
+        valid: false,
+        error: 'Kimi API Key格式不符合预期'
+      };
+    }
+    return { valid: true, sanitized: apiKey.trim() };
+  }
+
+  /**
+   * 验证Qwen(DashScope) API Key格式
+   */
+  static validateQwenKey(apiKey) {
+    // DashScope Key通常为较长的字母数字，允许-_.
+    const validPattern = /^[A-Za-z0-9-_.]{24,}$/;
+    if (!validPattern.test(apiKey)) {
+      return {
+        valid: false,
+        error: 'Qwen API Key格式不符合预期'
+      };
+    }
+    return { valid: true, sanitized: apiKey.trim() };
+  }
+
+  /**
+   * 验证Gemini API Key格式
+   */
+  static validateGeminiKey(apiKey) {
+    // 常见前缀：AIza
+    if (!apiKey.startsWith('AIza')) {
+      return {
+        valid: false,
+        error: 'Gemini API Key格式错误，应以"AIza"开头'
+      };
+    }
+    const validPattern = /^AIza[0-9A-Za-z-_]{20,}$/;
+    if (!validPattern.test(apiKey)) {
+      return {
+        valid: false,
+        error: 'Gemini API Key包含无效字符或长度不足'
+      };
+    }
+    return { valid: true, sanitized: apiKey.trim() };
   }
 
   /**
    * 脱敏API Key用于日志记录
-   * @param {string} apiKey - 原始API Key
-   * @returns {string} 脱敏后的API Key
    */
   static maskApiKey(apiKey) {
     if (!apiKey || apiKey.length < 8) {
@@ -125,8 +167,6 @@ class ApiKeyValidator {
 
   /**
    * 检查API Key是否可能泄露敏感信息
-   * @param {string} apiKey - API Key
-   * @returns {boolean} 是否安全
    */
   static isSafeForLogging(apiKey) {
     // 永远不要在日志中记录完整的API Key

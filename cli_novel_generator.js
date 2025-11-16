@@ -29,29 +29,41 @@ class CLINovelGenerator {
   }
 
   async setupApiKey() {
-    const apiKey = process.env.DEEPSEEK_API_KEY;
-    
+    console.log('\n🔌 选择API提供商:');
+    console.log('1. DeepSeek');
+    console.log('2. GPT (OpenAI)');
+    console.log('3. Kimi (Moonshot)');
+    console.log('4. Qwen (DashScope)');
+    console.log('5. Gemini');
+    const choice = await this.question('请选择(1-5，默认1): ');
+    const providers = { '1': 'deepseek', '2': 'gpt', '3': 'kimi', '4': 'qwen', '5': 'gemini' };
+    const provider = providers[choice] || 'deepseek';
+
+    const envKeyMap = {
+      deepseek: 'DEEPSEEK_API_KEY',
+      gpt: 'OPENAI_API_KEY',
+      openai: 'OPENAI_API_KEY',
+      kimi: 'KIMI_API_KEY',
+      qwen: 'QWEN_API_KEY',
+      gemini: 'GEMINI_API_KEY'
+    };
+    const envVar = envKeyMap[provider];
+    const existingKey = process.env[envVar];
+
+    let apiKey = existingKey;
     if (!apiKey) {
-      console.log('❌ 未找到API Key，请设置环境变量 DEEPSEEK_API_KEY');
-      const inputKey = await this.question('请输入您的DeepSeek API Key: ');
-      
-      const validation = ApiKeyValidator.validateApiKey(inputKey, 'deepseek');
-      if (!validation.valid) {
-        throw new Error(`API Key验证失败: ${validation.error}`);
-      }
-      
-      this.agentManager = new AgentManager('deepseek');
-      this.agentManager.setApiProvider('deepseek', validation.sanitized);
-    } else {
-      const validation = ApiKeyValidator.validateApiKey(apiKey, 'deepseek');
-      if (!validation.valid) {
-        throw new Error(`环境变量中的API Key无效: ${validation.error}`);
-      }
-      
-      this.agentManager = new AgentManager('deepseek');
-      this.agentManager.setApiProvider('deepseek', validation.sanitized);
-      console.log('✅ API Key验证成功');
+      console.log(`❌ 未找到环境变量 ${envVar}`);
+      apiKey = await this.question(`请输入您的${provider.toUpperCase()} API Key: `);
     }
+
+    const validation = ApiKeyValidator.validateApiKey(apiKey, provider);
+    if (!validation.valid) {
+      throw new Error(`API Key验证失败: ${validation.error}`);
+    }
+
+    this.agentManager = new AgentManager(provider);
+    this.agentManager.setApiProvider(provider, validation.sanitized);
+    console.log(`✅ 已选择提供商: ${provider}，API Key验证成功`);
   }
 
   async showMainMenu() {
@@ -194,8 +206,9 @@ class CLINovelGenerator {
     console.log('3. 查看项目状态');
     console.log('4. 查看章节列表');
     console.log('5. 返回主菜单');
+    console.log('6. 重写当前大纲');
     
-    const choice = await this.question('请选择操作 (1-5): ');
+    const choice = await this.question('请选择操作 (1-6): ');
     
     switch (choice) {
       case '1':
@@ -213,6 +226,9 @@ class CLINovelGenerator {
       case '5':
         await this.showMainMenu();
         return;
+      case '6':
+        await this.rewriteOutline();
+        break;
       default:
         console.log('❌ 无效选择，请重试');
         await this.showProjectMenu();
@@ -312,6 +328,55 @@ class CLINovelGenerator {
       });
     }
     
+    await this.showProjectMenu();
+  }
+
+  async rewriteOutline() {
+    if (!this.currentProject) {
+      console.log('❌ 未选择项目');
+      return await this.showMainMenu();
+    }
+    if (!this.currentProject.outline) {
+      console.log('📭 当前项目尚未生成大纲，请先执行大纲制定');
+      return await this.showProjectMenu();
+    }
+  
+    console.log('\n✍️ 大纲重写');
+    const newReq = await this.question('请输入新增要求或修改点: ');
+    const keepCountAns = await this.question('是否保留章节数量? (y/N): ');
+    const options = { preserveChapterCount: /^y(es)?$/i.test(keepCountAns) };
+  
+    try {
+      const rewrittenText = await this.agentManager.outlineEditor.rewriteOutline(
+        newReq,
+        this.currentProject,
+        options
+      );
+  
+      // 更新项目与章节
+      this.currentProject.outline = rewrittenText;
+      this.currentProject.outlineDiscussion = this.currentProject.outlineDiscussion || {};
+      this.currentProject.outlineDiscussion.rewrittenRequirements = newReq;
+      this.currentProject.outlineDiscussion.lastRewriteAt = new Date().toISOString();
+  
+      const parsedOutline = this.agentManager.outlineEditor.parseOutline(rewrittenText);
+      this.agentManager.outlineEditor.currentOutline = parsedOutline;
+      this.agentManager.pendingChapters = parsedOutline.chapters.map(ch => ({
+        number: ch.number,
+        title: ch.title,
+        outline: ch.outline || ch.content,
+        status: 'pending'
+      }));
+  
+      await this.agentManager.saveProject();
+  
+      console.log('✅ 大纲重写完成！\n');
+      console.log('—— 新的大纲（前20行） ——');
+      console.log(rewrittenText.split('\n').slice(0, 20).join('\n'));
+    } catch (error) {
+      console.error('❌ 大纲重写失败:', error.message);
+    }
+  
     await this.showProjectMenu();
   }
 

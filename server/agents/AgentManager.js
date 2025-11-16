@@ -3,6 +3,8 @@ const OutlineEditorAgent = require('./OutlineEditorAgent');
 const StyleEditorAgent = require('./StyleEditorAgent');
 const fs = require('fs-extra');
 const path = require('path');
+const KnowledgeStore = require('../services/KnowledgeStore');
+const ChapterPostProcessor = require('../services/ChapterPostProcessor');
 
 class AgentManager {
   constructor(apiProvider = 'deepseek') {
@@ -16,6 +18,7 @@ class AgentManager {
     this.completedChapters = [];
     this.pendingChapters = [];
     this.projectsDir = path.join(__dirname, '../../data/projects');
+    this.knowledgeStore = new KnowledgeStore(this.projectsDir);
     
     this.initializeDataDirectory();
   }
@@ -142,7 +145,63 @@ class AgentManager {
       };
     } catch (error) {
       console.error('❌ 大纲制定失败:', error);
-      throw new Error('大纲制定过程中出现错误');
+      // 离线兜底：在规划失败时生成基础大纲，确保能进入写作阶段
+      try {
+        const fallbackOutlineText = [
+          '第1章：开篇设定',
+          '- 介绍主角与世界观设定',
+          '第2章：冲突引入',
+          '- 主要矛盾出现，埋下线索',
+          '第3章：第一次转折',
+          '- 主角做出关键选择',
+          '第4章：推进发展',
+          '- 角色关系深化，收集线索',
+          '第5章：中段挫败',
+          '- 遇到阻力与误导',
+          '第6章：真相逼近',
+          '- 线索串联，怀疑加深',
+          '第7章：高潮对抗',
+          '- 核心冲突爆发，正面对抗',
+          '第8章：余波与收尾',
+          '- 冲突解决与主题落点'
+        ].join('\n');
+
+        // 保存到项目并解析
+        this.currentProject.outline = fallbackOutlineText;
+        this.currentProject.outlineDiscussion = {
+          participants: ['作者', '大纲编辑'],
+          rounds: [],
+          finalOutline: fallbackOutlineText
+        };
+
+        const parsedOutline = this.outlineEditor.parseOutline(fallbackOutlineText);
+        this.outlineEditor.currentOutline = parsedOutline;
+
+        // 构建人设与角色词典（离线）
+        this.outlineEditor.currentOutline.characterProfiles = await this.outlineEditor.buildCharacterProfiles(this.currentProject);
+        this.outlineEditor.currentOutline.characterLexicon = await this.outlineEditor.buildCharacterLexiconFromOutline();
+
+        this.pendingChapters = parsedOutline.chapters.map(ch => ({
+          number: ch.number,
+          title: ch.title,
+          outline: ch.outline || ch.content,
+          status: 'pending'
+        })).sort((a, b) => a.number - b.number);
+
+        this.currentProject.status = 'ready_to_write';
+        this.workflowState = 'writing';
+        await this.saveProject();
+
+        return {
+          status: 'planning_completed',
+          outline: fallbackOutlineText,
+          totalChapters: this.pendingChapters.length,
+          message: '规划失败已使用离线大纲兜底，继续进入写作阶段'
+        };
+      } catch (fallbackErr) {
+        console.error('❌ 规划兜底失败:', fallbackErr);
+        throw new Error('大纲制定过程中出现错误');
+      }
     }
   }
 
@@ -181,12 +240,12 @@ class AgentManager {
         let chapter = null;
         let retryCount = 0;
         let lastError = null;
-
+        let chapterOutline = null;
         // 重试机制
         while (retryCount < maxRetries && !chapter) {
           try {
             // 获取章节大纲
-            const chapterOutline = this.outlineEditor.getChapterOutline(chapterPlan.number);
+            chapterOutline = this.outlineEditor.getChapterOutline(chapterPlan.number);
             
             // 获取前面已完成章节的内容，确保剧情连贯
             const previousChapters = this.completedChapters
@@ -195,7 +254,30 @@ class AgentManager {
             
             console.log(`📖 前置章节数量: ${previousChapters.length}`);
             
-            // 创作章节，传入前面章节作为上下文，并将大纲的情节点、预期角色与词典注入
+            // 新增：读取持久化的最近章节摘要（用于更精准的前情提要）
+            const recentSummaries = await this.knowledgeStore.readRecentSummaries(this.currentProject.id, 3);
+
+            // 新增：写作前react阶段——作者先明确本章目标与角色，并将未出场角色加入词典记忆
+            const reactPlan = await this.author.reactBeforeWriting(
+              chapterPlan.number,
+              chapterOutline?.outline || chapterPlan.outline,
+              previousChapters,
+              {
+                plotPoints: chapterOutline?.plotPoints || [],
+                characters: chapterOutline?.characters || [],
+                characterProfiles: chapterOutline?.characterProfiles || {},
+                recentSummaries,
+                characterLexicon: this.outlineEditor?.currentOutline?.characterLexicon || {}
+              }
+            );
+            try {
+              this.outlineEditor.applyLexiconUpdates(reactPlan?.lexiconUpdates || {});
+            } catch (e) {
+              console.warn('应用react词典更新失败:', e.message);
+            }
+            await this.saveProject();
+            
+            // 创作章节，传入前面章节作为上下文，并将大纲的情节点与预期角色注入
             chapter = await this.author.writeChapter(
               chapterPlan.number, 
               chapterOutline?.outline || chapterPlan.outline,
@@ -205,8 +287,10 @@ class AgentManager {
                 characters: chapterOutline?.characters || [],
                 // 新增：传递本章角色人设
                 characterProfiles: chapterOutline?.characterProfiles || {},
-                // 新增：传递本章角色词典记忆
-                characterLexicon: chapterOutline?.characterLexicon || {}
+                // 新增：持久化的最近摘要
+                recentSummaries,
+                // 新增：角色词典记忆（全局）
+                characterLexicon: this.outlineEditor?.currentOutline?.characterLexicon || {}
               }
             );
 
@@ -254,6 +338,14 @@ class AgentManager {
         // 每完成一章就保存一次，避免数据丢失
         await this.saveProject();
         console.log(`💾 第${chapterPlan.number}章已保存`);
+        // 新增：生成并持久化章节摘要与索引
+        try {
+          const summaryData = ChapterPostProcessor.processChapter(chapter, chapterOutline || this.outlineEditor.getChapterOutline(chapterPlan.number));
+          await this.knowledgeStore.writeChapterSummary(this.currentProject.id, chapterPlan.number, summaryData);
+          console.log(`🧠 已生成并持久化第${chapterPlan.number}章摘要与索引`);
+        } catch (e) {
+          console.warn('持久化章节摘要失败:', e.message);
+        }
       }
 
       console.log(`🎉 成功完成 ${writtenChapters.length} 章的顺序创作`);

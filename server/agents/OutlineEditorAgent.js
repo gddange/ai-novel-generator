@@ -113,6 +113,9 @@ class OutlineEditorAgent extends BaseAgent {
         hasApiKey: !!this.apiService.apiKey
       });
       this.completeTask();
+      if (!this.isFallbackEnabled()) {
+        throw error;
+      }
       const fallbackStructure = `《${novelInfo.title}》基本结构框架：
 1. 开篇设定（1-3章）：介绍主角和世界观
 2. 冲突引入（4-6章）：主要矛盾出现
@@ -152,6 +155,10 @@ ${authorFeedback}
 
     // 如果没有API Key，直接使用离线fallback，避免抛错中断流程
     if (!this.apiService.apiKey) {
+      if (!this.isFallbackEnabled()) {
+        this.completeTask();
+        throw new Error('缺少API Key，已禁用兜底模式');
+      }
       console.warn('⚠️ 无API Key，使用离线fallback大纲');
       const fallbackOutline = `最终大纲（离线生成）：\n标题：${novelInfo.title}\n类型：${novelInfo.genre}\n主题：${novelInfo.theme || novelInfo.description || ''}\n\n作者反馈摘要：${(authorFeedback || '').substring(0, 300)}...\n\n第1-3章：开篇设定与人物登场\n- 介绍主角与世界观设定\n- 埋下核心冲突伏笔\n\n第4-6章：冲突引入与第一次转折\n- 冲突显现，主角做出关键选择\n- 第一次明显的情节转折\n\n第7-12章：推进发展与角色成长\n- 推进主线任务，加深矛盾与复杂度\n- 角色关系发展与成长节点\n\n第13-15章：高潮与对抗\n- 核心冲突爆发，正面对抗\n- 关键牺牲与转机\n\n第16-18章：收尾与解决\n- 冲突解决与余波处理\n- 角色命运与主题落点\n\n主要角色\n- 主角：待定\n- 重要配角：待定\n\n情节要点\n- 开端遭遇\n- 中段挫败\n- 最终逆转`;
       this.currentOutline = this.parseOutline(fallbackOutline);
@@ -192,6 +199,10 @@ ${authorFeedback}
         apiService: this.apiService.constructor.name,
         hasApiKey: !!this.apiService.apiKey
       });
+      if (!this.isFallbackEnabled()) {
+        this.completeTask();
+        throw error;
+      }
       // API失败时使用离线fallback，保障流程可继续
       const fallbackOutline = `最终大纲（离线生成）：\n标题：${novelInfo.title}\n类型：${novelInfo.genre}\n主题：${novelInfo.theme || novelInfo.description || ''}\n\n作者反馈摘要：${(authorFeedback || '').substring(0, 300)}...\n\n第1-3章：开篇设定与人物登场\n- 介绍主角与世界观设定\n- 埋下核心冲突伏笔\n\n第4-6章：冲突引入与第一次转折\n- 冲突显现，主角做出关键选择\n- 第一次明显的情节转折\n\n第7-12章：推进发展与角色成长\n- 推进主线任务，加深矛盾与复杂度\n- 角色关系发展与成长节点\n\n第13-15章：高潮与对抗\n- 核心冲突爆发，正面对抗\n- 关键牺牲与转机\n\n第16-18章：收尾与解决\n- 冲突解决与余波处理\n- 角色命运与主题落点\n\n主要角色\n- 主角：待定\n- 重要配角：待定\n\n情节要点\n- 开端遭遇\n- 中段挫败\n- 最终逆转`;
       this.currentOutline = this.parseOutline(fallbackOutline);
@@ -627,6 +638,25 @@ ${authorFeedback}
     });
   }
 
+  // 新增：应用作者react阶段生成的角色词典更新
+  applyLexiconUpdates(updates = {}) {
+    if (!this.currentOutline) return;
+    if (!this.currentOutline.characterLexicon) this.currentOutline.characterLexicon = {};
+    const lex = this.currentOutline.characterLexicon;
+    for (const [name, entry] of Object.entries(updates || {})) {
+      if (!name) continue;
+      const prev = lex[name] || {};
+      const mergedKeyScenes = Array.from(new Set([...(prev.keyScenesPlanned || []), ...(entry.keyScenesPlanned || [])])).sort((a, b) => a - b);
+      lex[name] = {
+        ...prev,
+        ...entry,
+        keyScenesPlanned: mergedKeyScenes,
+        source: prev.source || entry.source || 'react',
+        lastUpdated: new Date().toISOString()
+      };
+    }
+  }
+
   /**
    * 监督创作进度
    */
@@ -1006,6 +1036,94 @@ ${completedChapters.slice(-3).map(ch => `第${ch.number}章：${ch.title}\n${ch.
   import(data) {
     super.import(data);
     this._persistedOutlineExtras = data?.currentOutlineExtras || {};
+  }
+
+  // 新增：重写大纲，结合新增要求
+  async rewriteOutline(newRequirements, novelInfo = {}, options = {}) {
+    console.log('📝 开始重写大纲...');
+    this.setCurrentTask('重写大纲');
+    const defaults = {
+      preserveChapterCount: true,
+      preserveCharacterNames: true,
+      integrateNewTheme: true,
+      temperature: 0.6,
+      maxTokens: 2000
+    };
+    const cfg = { ...defaults, ...options };
+
+    const outlineText = (typeof novelInfo.outline === 'string' && novelInfo.outline.trim().length > 0)
+      ? novelInfo.outline
+      : this.outlineToText(this.currentOutline);
+
+    const reqText = String(newRequirements || '').trim();
+
+    const prompt = `你是一位资深大纲编辑。请在保持连贯性与可执行性的前提下重写现有大纲。
+现有大纲（节选）：
+${outlineText.slice(0, 1800)}
+
+新增要求：
+${reqText}
+
+重写要求：
+- ${cfg.preserveChapterCount ? '保持章节数量与编号不变' : '允许调整章节数量，但需重新编号且说明原因'}
+- ${cfg.preserveCharacterNames ? '保留已有角色姓名，避免改名；必要时可新增角色' : '允许更改角色设定与姓名'}
+- 明确每章的标题与主要事件（2-4条要点）
+- 标注关键转折与冲突升级位置
+- 若有新增主题或设定，请在前几章埋下伏笔并在后续兑现
+- 输出格式采用“第X章：标题”并分行列出要点`;
+
+    let rewritten = '';
+    if (!this.apiService.apiKey) {
+      if (!this.isFallbackEnabled()) {
+        this.completeTask();
+        throw new Error('缺少API Key，已禁用兜底模式');
+      }
+      console.warn('⚠️ 无API Key，使用离线重写fallback');
+      const lines = outlineText.split('\n');
+      const resultLines = [];
+      let injected = false;
+      for (const line of lines) {
+        resultLines.push(line);
+        if (!injected && /^第?\s*\d+\s*章/.test(line)) {
+          resultLines.push(`- 新增要求整合：${reqText.substring(0, 120)}...`);
+          injected = true;
+        }
+      }
+      rewritten = resultLines.join('\n');
+    } else {
+      rewritten = await this.apiService.generateText(prompt, {
+        maxTokens: cfg.maxTokens,
+        temperature: cfg.temperature,
+        systemPrompt: '你是专业的小说大纲编辑，擅长结构重写与一致性维护。'
+      });
+    }
+
+    this.currentOutline = this.parseOutline(rewritten);
+    this.currentOutline.characterProfiles = await this.buildCharacterProfiles(novelInfo);
+    this.currentOutline.characterLexicon = await this.buildCharacterLexiconFromOutline();
+
+    this.addToContext(`大纲重写完成：${rewritten.substring(0, 300)}...`, 0.9);
+    this.completeTask();
+    return rewritten;
+  }
+
+  // 辅助：将currentOutline对象粗化为文本
+  outlineToText(outlineObj = this.currentOutline) {
+    if (!outlineObj || !Array.isArray(outlineObj.chapters)) return '';
+    const lines = [];
+    outlineObj.chapters
+      .slice()
+      .sort((a, b) => a.number - b.number)
+      .forEach(ch => {
+        const title = String(ch.title || `第${ch.number}章`).trim();
+        const body = String(ch.outline || ch.content || '').trim();
+        lines.push(`${title}`);
+        if (body) {
+          const points = body.split(/[。！？!?；;\n]/).map(s => s.trim()).filter(Boolean).slice(0, 4);
+          points.forEach(p => lines.push(`- ${p}`));
+        }
+      });
+    return lines.join('\n');
   }
 }
 

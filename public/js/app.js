@@ -96,6 +96,9 @@ class NovelGeneratorApp {
 
     init() {
         this.bindEvents();
+        // 读取并应用设置到项目表单
+        this.loadSettings();
+        this.applySettingsToForm();
         this.checkSystemStatus();
         this.loadProjects();
     }
@@ -114,7 +117,11 @@ class NovelGeneratorApp {
             this.showWelcomeSection();
         });
 
-        // 项目表单
+        // 新增：设置按钮打开设置面板
+        document.getElementById('settingsBtn').addEventListener('click', () => {
+            this.openSettings();
+        });
+
         document.getElementById('newProjectForm').addEventListener('submit', (e) => {
             e.preventDefault();
             this.createNewProject();
@@ -861,6 +868,110 @@ class NovelGeneratorApp {
             </div>
         `);
     }
+
+    // 设置管理：加载、应用与打开设置面板
+    loadSettings() {
+        try {
+            const raw = localStorage.getItem('novelGeneratorSettings');
+            if (raw) this.settings = JSON.parse(raw);
+        } catch (_) {}
+        if (!this.settings) this.settings = { apiProvider: 'deepseek', apiKey: '' };
+    }
+
+    applySettingsToForm() {
+        const providerSelect = document.getElementById('apiProvider');
+        const apiKeyInput = document.getElementById('apiKey');
+        if (providerSelect && this.settings?.apiProvider) {
+            providerSelect.value = this.settings.apiProvider;
+            if (typeof toggleApiKeyInput === 'function') toggleApiKeyInput();
+        }
+        if (apiKeyInput && this.settings?.apiKey) {
+            apiKeyInput.value = this.settings.apiKey;
+        }
+    }
+
+    openSettings() {
+        const current = this.settings || { apiProvider: 'deepseek', apiKey: '' };
+        const content = `
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">AI服务提供商</label>
+                    <select id="settingsApiProvider" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="deepseek">DeepSeek (推荐)</option>
+                        <option value="openai">GPT / OpenAI</option>
+                        <option value="kimi">Kimi</option>
+                        <option value="qwen">Qwen</option>
+                        <option value="gemini">Gemini</option>
+                    </select>
+                    <p id="settingsApiHint" class="text-xs text-gray-500 mt-1">选择用于生成小说内容的AI服务</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">API Key</label>
+                    <div class="relative">
+                        <input type="password" id="settingsApiKey" class="w-full px-3 py-2 pr-10 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="请输入您的API Key">
+                        <button type="button" id="settingsApiKeyToggle" class="absolute inset-y-0 right-0 pr-3 flex items中心 text-gray-400 hover:text-gray-600">
+                            <i id="settingsApiKeyToggleIcon" class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                    <p id="settingsApiLink" class="text-xs text-gray-500 mt-1"></p>
+                </div>
+                <div class="flex space-x-4">
+                    <button id="saveSettingsBtn" class="flex-1 gradient-bg text-white py-2 px-4 rounded-md hover:opacity-90 transition-opacity">
+                        <i class="fas fa-save mr-2"></i>保存
+                    </button>
+                    <button id="cancelSettingsBtn" class="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-400 transition-colors">
+                        <i class="fas fa-times mr-2"></i>取消
+                    </button>
+                </div>
+            </div>
+        `;
+        this.showModal('设置', content);
+
+        const providerSelect = document.getElementById('settingsApiProvider');
+        const keyInput = document.getElementById('settingsApiKey');
+        providerSelect.value = current.apiProvider || 'deepseek';
+        keyInput.value = current.apiKey || '';
+
+        const updateSettingsKeyUI = () => {
+            const provider = providerSelect.value;
+            const mapping = {
+                deepseek: { link: '<a href="https://platform.deepseek.com/api_keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取DeepSeek API Key →</a>' },
+                openai: { link: '<a href="https://platform.openai.com/api-keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取OpenAI API Key →</a>' },
+                kimi: { link: '<a href="https://platform.moonshot.cn/api-keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取Kimi API Key →</a>' },
+                qwen: { link: '<a href="https://dashscope.console.aliyun.com/apiKey" target="_blank" class="text-blue-500 hover:text-blue-700">获取Qwen API Key →</a>' },
+                gemini: { link: '<a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-blue-500 hover:text-blue-700">获取Gemini API Key →</a>' }
+            };
+            document.getElementById('settingsApiLink').innerHTML = (mapping[provider] || mapping.deepseek).link;
+        };
+        updateSettingsKeyUI();
+        providerSelect.addEventListener('change', updateSettingsKeyUI);
+
+        document.getElementById('settingsApiKeyToggle').addEventListener('click', () => {
+            const icon = document.getElementById('settingsApiKeyToggleIcon');
+            if (keyInput.type === 'password') {
+                keyInput.type = 'text';
+                icon.className = 'fas fa-eye-slash';
+            } else {
+                keyInput.type = 'password';
+                icon.className = 'fas fa-eye';
+            }
+        });
+
+        document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+            this.settings = {
+                apiProvider: providerSelect.value,
+                apiKey: keyInput.value.trim()
+            };
+            try { localStorage.setItem('novelGeneratorSettings', JSON.stringify(this.settings)); } catch (_) {}
+            this.applySettingsToForm();
+            this.showSuccess('设置已保存');
+            this.hideModal();
+        });
+
+        document.getElementById('cancelSettingsBtn').addEventListener('click', () => {
+            this.hideModal();
+        });
+    }
 }
 
 // API Key 相关辅助函数
@@ -869,16 +980,38 @@ function toggleApiKeyInput() {
     const apiKeyLabel = document.getElementById('apiKeyLabel');
     const apiKeyHint = document.getElementById('apiKeyHint');
     const apiKeyLink = document.getElementById('apiKeyLink');
-    
-    if (apiProvider === 'openai') {
-        apiKeyLabel.textContent = 'OpenAI API Key';
-        apiKeyHint.textContent = '您的OpenAI API Key将用于生成内容，不会被存储';
-        apiKeyLink.innerHTML = '<a href="https://platform.openai.com/api-keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取OpenAI API Key →</a>';
-    } else {
-        apiKeyLabel.textContent = 'DeepSeek API Key';
-        apiKeyHint.textContent = '您的DeepSeek API Key将用于生成内容，不会被存储';
-        apiKeyLink.innerHTML = '<a href="https://platform.deepseek.com/api_keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取DeepSeek API Key →</a>';
-    }
+    const providerConfig = {
+        deepseek: {
+            label: 'DeepSeek API Key',
+            hint: '您的DeepSeek API Key将用于生成内容，不会被存储',
+            link: '<a href="https://platform.deepseek.com/api_keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取DeepSeek API Key →</a>'
+        },
+        openai: {
+            label: 'OpenAI API Key',
+            hint: '您的OpenAI API Key将用于生成内容，不会被存储',
+            link: '<a href="https://platform.openai.com/api-keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取OpenAI API Key →</a>'
+        },
+        kimi: {
+            label: 'Kimi API Key',
+            hint: '您的Kimi API Key将用于生成内容，不会被存储',
+            link: '<a href="https://platform.moonshot.cn/api-keys" target="_blank" class="text-blue-500 hover:text-blue-700">获取Kimi API Key →</a>'
+        },
+        qwen: {
+            label: 'Qwen API Key',
+            hint: '您的Qwen API Key将用于生成内容，不会被存储',
+            link: '<a href="https://dashscope.console.aliyun.com/apiKey" target="_blank" class="text-blue-500 hover:text-blue-700">获取Qwen API Key →</a>'
+        },
+        gemini: {
+            label: 'Gemini API Key',
+            hint: '您的Gemini API Key将用于生成内容，不会被存储',
+            link: '<a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-blue-500 hover:text-blue-700">获取Gemini API Key →</a>'
+        }
+    };
+
+    const cfg = providerConfig[apiProvider] || providerConfig.deepseek;
+    apiKeyLabel.textContent = cfg.label;
+    apiKeyHint.textContent = cfg.hint;
+    apiKeyLink.innerHTML = cfg.link;
 }
 
 function toggleApiKeyVisibility() {

@@ -399,4 +399,69 @@ router.get('/communications', (req, res) => {
   }
 });
 
+router.post('/projects/:projectId/outline/rewrite', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { newRequirements = '', options = {}, apiProvider, apiKey } = req.body;
+
+    // 确保加载项目
+    if (!agentManager.currentProject || agentManager.currentProject.id !== projectId) {
+      await agentManager.loadProject(projectId);
+    }
+
+    // 可选：更新API提供商与Key
+    if (apiKey) {
+      const validation = ApiKeyValidator.validateApiKey(apiKey, apiProvider || agentManager.apiProvider || 'deepseek');
+      if (!validation.valid) {
+        return res.status(400).json({ success: false, error: validation.error });
+      }
+      agentManager.setApiProvider(apiProvider || 'deepseek', validation.sanitized);
+    }
+
+    // 调用重写方法
+    const rewrittenText = await agentManager.outlineEditor.rewriteOutline(
+      newRequirements,
+      agentManager.currentProject,
+      options
+    );
+
+    // 更新项目和待写章节
+    agentManager.currentProject.outline = rewrittenText;
+    agentManager.currentProject.outlineDiscussion = agentManager.currentProject.outlineDiscussion || {};
+    agentManager.currentProject.outlineDiscussion.rewrittenRequirements = newRequirements;
+    agentManager.currentProject.outlineDiscussion.lastRewriteAt = new Date().toISOString();
+
+    const parsedOutline = agentManager.outlineEditor.parseOutline(rewrittenText);
+    agentManager.outlineEditor.currentOutline = parsedOutline;
+    agentManager.pendingChapters = parsedOutline.chapters.map(ch => ({
+      number: ch.number,
+      title: ch.title,
+      outline: ch.outline || ch.content,
+      status: 'pending'
+    }));
+
+    await agentManager.saveProject();
+
+    // Socket通知
+    const io = req.app.get('io');
+    if (io) {
+      io.to(projectId).emit('outline-rewritten', {
+        projectId,
+        outline: rewrittenText,
+        stats: agentManager.outlineEditor.getOutlineStats()
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        outline: rewrittenText,
+        stats: agentManager.outlineEditor.getOutlineStats()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
